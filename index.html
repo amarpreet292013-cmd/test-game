@@ -2,45 +2,66 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Minecraft: Water & Mining Update</title>
+    <title>Minecraft: Mining Update</title>
     <style>
         body { margin: 0; overflow: hidden; background: #87CEEB; font-family: monospace; user-select: none; }
         
+        /* UI LAYOUT */
         #crosshair {
-            position: absolute; top: 50%; left: 50%; width: 20px; height: 2px;
-            background: rgba(255,255,255,0.8); transform: translate(-50%, -50%);
-            pointer-events: none; z-index: 10;
+            position: absolute; top: 50%; left: 50%; width: 20px; height: 20px;
+            transform: translate(-50%, -50%); pointer-events: none; z-index: 10;
         }
+        /* The Mining Progress Ring */
+        #mining-ring {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            border-radius: 50%; opacity: 0;
+            transition: opacity 0.1s;
+        }
+        #mining-fill {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            border: 2px solid white;
+            border-radius: 50%;
+            clip-path: polygon(50% 50%, 50% 0%, 50% 0%, 50% 0%, 50% 0%, 50% 0%);
+            transform: rotate(-90deg);
+        }
+        /* Simple Crosshair dot */
         #crosshair::after {
-            content: ''; position: absolute; top: 50%; left: 50%; width: 2px; height: 20px;
-            background: rgba(255,255,255,0.8); transform: translate(-50%, -50%);
+            content: ''; position: absolute; top: 50%; left: 50%; width: 4px; height: 4px;
+            background: white; transform: translate(-50%, -50%); border-radius: 50%;
         }
-        
+
         #ui {
             position: absolute; top: 10px; left: 10px; color: white;
-            background: rgba(0,0,0,0.5); padding: 10px; border-radius: 4px; pointer-events: none;
+            background: rgba(0,0,0,0.6); padding: 10px; border-radius: 4px; pointer-events: none;
         }
-        #coords { font-weight: bold; color: yellow; }
         #slot { font-weight: bold; color: cyan; }
-        
-        /* Underwater Overlay */
         #water-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0, 50, 200, 0.4);
-            pointer-events: none; display: none; z-index: 5;
+            background: rgba(0, 50, 200, 0.4); pointer-events: none; display: none; z-index: 5;
+        }
+        /* Notification when picking up items */
+        #pickup-msg {
+            position: absolute; bottom: 100px; left: 50%; transform: translateX(-50%);
+            color: yellow; font-weight: bold; font-size: 20px; opacity: 0;
+            transition: opacity 0.5s; text-shadow: 1px 1px 0 #000;
         }
     </style>
 </head>
 <body>
-    <div id="crosshair"></div>
+    <div id="crosshair">
+        <div id="mining-ring"><div id="mining-fill"></div></div>
+    </div>
     <div id="water-overlay"></div>
+    <div id="pickup-msg">+1 Block</div>
+    
     <div id="ui">
-        <div><b>Infinite World + Water Physics</b></div>
-        <div>WASD = Move | Space = Jump/Swim</div>
-        <div>Left Click = Mine | Right Click = Place</div>
-        <div>Keys 1-7 = Select Block</div>
+        <div><b>Mining & Drops Update</b></div>
+        <div>Hold Left Click to Mine</div>
+        <div>Right Click to Place</div>
+        <div>Keys 1-7 to Select</div>
         <div>Selected: <span id="slot">Grass</span></div>
-        <div>Pos: <span id="coords">0, 0</span></div>
+        <div>Blocks Collected: <span id="score">0</span></div>
     </div>
 
     <script type="importmap">
@@ -60,16 +81,19 @@
         const CHUNK_SIZE = 16;
         const RENDER_DISTANCE = 3; 
         const WATER_LEVEL = -3;
+        
+        // Block Hardness (Seconds to break)
+        const HARDNESS = [0.4, 0.5, 1.2, 0.8, 0.2, 0, 99]; // Grass, Dirt, Stone, Wood, Leaf, Water, Lava
 
         // --- SETUP ---
         const scene = new THREE.Scene();
         const skyColor = new THREE.Color(0x87CEEB);
         const waterColor = new THREE.Color(0x001e36);
         scene.background = skyColor;
-        scene.fog = new THREE.Fog(skyColor, 20, 60);
+        scene.fog = new THREE.Fog(skyColor, 15, 50);
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({ antialias: false }); // False for retro feel & performance
+        const renderer = new THREE.WebGLRenderer({ antialias: false }); 
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
@@ -79,420 +103,314 @@
         sun.position.set(50, 100, 50);
         scene.add(sun);
 
-        // --- PLAYER HAND (VISUAL) ---
+        // --- HAND MODEL ---
         const handGroup = new THREE.Group();
         camera.add(handGroup);
-        // Right hand
-        const handGeo = new THREE.BoxGeometry(0.4, 0.4, 1.2);
-        const handMat = new THREE.MeshLambertMaterial({ color: 0xeebb99 }); // Skin tone
-        const handMesh = new THREE.Mesh(handGeo, handMat);
-        handMesh.position.set(0.5, -0.5, -1);
-        handMesh.rotation.x = -0.2;
-        handMesh.rotation.y = -0.1;
+        const handMesh = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.8), new THREE.MeshLambertMaterial({ color: 0xeebb99 }));
+        handMesh.position.set(0.4, -0.4, -0.8);
+        handMesh.rotation.set(-0.2, -0.2, 0);
         handGroup.add(handMesh);
         scene.add(camera);
 
-        // --- TEXTURES ---
-        // 0:Grass, 1:Dirt, 2:Stone, 3:Wood, 4:Leaves, 5:Water, 6:Lava
+        // --- ASSETS ---
         const BLOCK_NAMES = ["Grass", "Dirt", "Stone", "Wood", "Leaves", "Water", "Lava"];
-        
         function createAtlas() {
             const canvas = document.createElement('canvas');
             canvas.width = 32 * 7; canvas.height = 32;
             const ctx = canvas.getContext('2d');
             const colors = ['#4caf50', '#5d4037', '#757575', '#3e2723', '#2e7d32', '#29b6f6', '#ff5722'];
-            
             colors.forEach((c, i) => {
-                ctx.fillStyle = c;
-                ctx.fillRect(i*32, 0, 32, 32);
-                ctx.fillStyle = 'rgba(0,0,0,0.15)'; // Noise
-                for(let n=0; n<20; n++) ctx.fillRect(i*32+Math.random()*32, Math.random()*32, 2, 2);
-                
-                if(i===3) { // Wood rings
-                     ctx.fillStyle = 'rgba(0,0,0,0.2)';
-                     ctx.fillRect(i*32+10, 0, 4, 32); ctx.fillRect(i*32+20, 0, 4, 32);
-                }
-                if(i===4) { // Leaves details
-                    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-                    ctx.fillRect(i*32+5, 5, 4, 4); ctx.fillRect(i*32+20, 20, 6, 6);
-                }
+                ctx.fillStyle = c; ctx.fillRect(i*32, 0, 32, 32);
+                ctx.fillStyle = 'rgba(0,0,0,0.1)'; for(let n=0;n<20;n++) ctx.fillRect(i*32+Math.random()*32,Math.random()*32,2,2);
             });
             const tex = new THREE.CanvasTexture(canvas);
             tex.magFilter = THREE.NearestFilter;
             tex.colorSpace = THREE.SRGBColorSpace;
             return tex;
         }
-        
         const atlas = createAtlas();
         const matSolid = new THREE.MeshLambertMaterial({ map: atlas, transparent: true, alphaTest: 0.1 });
         const matWater = new THREE.MeshLambertMaterial({ map: atlas, transparent: true, opacity: 0.7, side: THREE.DoubleSide });
 
-        // --- CHUNK SYSTEM (DUAL MESH) ---
-        // We separate Solid blocks and Water blocks so we can walk through water
+        // --- CHUNK SYSTEM ---
         const chunks = new Map();
-
-        function noise(x, z) {
-            const sin = Math.sin(x / 15 + z / 25) * 6;
-            const cos = Math.cos(x / 20 - z / 10) * 6;
-            return Math.floor(sin + cos);
-        }
+        function noise(x, z) { return Math.floor((Math.sin(x/15+z/25)*6 + Math.cos(x/20-z/10)*6)); }
 
         class Chunk {
             constructor(cx, cz) {
-                this.cx = cx;
-                this.cz = cz;
-                this.data = new Map(); 
-                this.meshSolid = null;
-                this.meshWater = null;
+                this.cx = cx; this.cz = cz; this.data = new Map(); 
+                this.meshS = null; this.meshW = null;
                 this.generate();
             }
-
             generate() {
-                const solidVerts = [], solidUVs = [], solidIndices = [];
-                const waterVerts = [], waterUVs = [], waterIndices = [];
-                let sCount = 0, wCount = 0;
-
-                const startX = this.cx * CHUNK_SIZE;
-                const startZ = this.cz * CHUNK_SIZE;
-                const heights = new Int8Array(CHUNK_SIZE * CHUNK_SIZE);
-
-                // Terrain & Water Pass
-                for (let x = 0; x < CHUNK_SIZE; x++) {
-                    for (let z = 0; z < CHUNK_SIZE; z++) {
-                        const wx = startX + x, wz = startZ + z;
+                const vs=[], us=[], is=[], vw=[], uw=[], iw=[]; // Verts, UVs, Indices
+                let sc=0, wc=0;
+                const startX = this.cx*CHUNK_SIZE, startZ = this.cz*CHUNK_SIZE;
+                
+                for(let x=0; x<CHUNK_SIZE; x++) {
+                    for(let z=0; z<CHUNK_SIZE; z++) {
+                        const wx = startX+x, wz = startZ+z;
                         const h = noise(wx, wz);
-                        heights[x + z * CHUNK_SIZE] = h;
-
-                        // Solid Blocks
-                        for (let y = h - 5; y <= h; y++) {
-                            if (this.checkVoid(wx, y, wz)) continue;
+                        
+                        // Solid
+                        for(let y=h-5; y<=h; y++) {
+                            if(this.data.get(`${wx},${y},${wz}`) === 0) continue; // Deleted
+                            let type = (y===h)?0:(y<h-3?2:1); // Grass/Stone/Dirt
+                            if(y===h && y<=WATER_LEVEL+1 && y>=WATER_LEVEL-1) type=1; // Sand
+                            if(y<-8) type=6; // Lava
+                            if(this.data.has(`${wx},${y},${wz}`) && this.data.get(`${wx},${y},${wz}`)>0) type = this.data.get(`${wx},${y},${wz}`)-1;
                             
-                            let type = 1; // Dirt
-                            if (y === h) type = 0; // Grass
-                            if (y < h - 3) type = 2; // Stone
-                            if (y === h && y <= WATER_LEVEL + 1 && y >= WATER_LEVEL -1) type = 1; // Beach
-                            if (y < -8) type = 6; // Lava deep down
-                            if (this.checkCustom(wx, y, wz) > 0) type = this.data.get(`${wx},${y},${wx}`) - 1;
-
-                            // If block is Lava(6), treat as solid mesh but visual is lava
-                            this.addFace(wx, y, wz, type, solidVerts, solidUVs, solidIndices, sCount);
-                            sCount += 24;
+                            this.addFace(wx,y,wz,type,vs,us,is,sc); sc+=24;
                         }
-
-                        // Water Blocks
-                        for (let y = h + 1; y <= WATER_LEVEL; y++) {
-                             if (this.checkVoid(wx, y, wz)) continue;
-                             this.addFace(wx, y, wz, 5, waterVerts, waterUVs, waterIndices, wCount);
-                             wCount += 24;
+                        // Water
+                        for(let y=h+1; y<=WATER_LEVEL; y++) {
+                            if(this.data.get(`${wx},${y},${wz}`) === 0) continue;
+                            this.addFace(wx,y,wz,5,vw,uw,iw,wc); wc+=24;
                         }
                     }
                 }
-
-                // Trees Pass (Simple)
-                for (let x = 2; x < CHUNK_SIZE - 2; x++) {
-                    for (let z = 2; z < CHUNK_SIZE - 2; z++) {
-                        const wx = startX + x, wz = startZ + z;
-                        const h = heights[x + z * CHUNK_SIZE];
-                        if (h > WATER_LEVEL && (Math.sin(wx*23.1 + wz*12.4)*0.5+0.5) > 0.98) {
-                             // Trunk
-                             for(let i=1; i<=4; i++) {
-                                 if(!this.checkVoid(wx, h+i, wz)) {
-                                    this.addFace(wx, h+i, wz, 3, solidVerts, solidUVs, solidIndices, sCount);
-                                    sCount += 24;
-                                 }
-                             }
-                             // Leaves
-                             for(let lx=wx-1; lx<=wx+1; lx++) {
-                                 for(let lz=wz-1; lz<=wz+1; lz++) {
-                                     if(lx===wx && lz===wz && lx!==wx) continue; // skip center
-                                     if(!this.checkVoid(lx, h+4, lz)) {
-                                        this.addFace(lx, h+4, lz, 4, solidVerts, solidUVs, solidIndices, sCount);
-                                        sCount += 24;
-                                     }
-                                 }
-                             }
-                        }
-                    }
-                }
-                
                 this.dispose();
-                if(solidVerts.length > 0) this.meshSolid = this.createMesh(solidVerts, solidUVs, solidIndices, matSolid);
-                if(waterVerts.length > 0) this.meshWater = this.createMesh(waterVerts, waterUVs, waterIndices, matWater);
+                if(vs.length>0) this.meshS = this.buildMesh(vs,us,is,matSolid);
+                if(vw.length>0) this.meshW = this.buildMesh(vw,uw,iw,matWater);
             }
-
-            checkVoid(x, y, z) { return this.data.has(`${x},${y},${z}`) && this.data.get(`${x},${y},${z}`) === 0; }
-            checkCustom(x, y, z) { return this.data.has(`${x},${y},${z}`) ? this.data.get(`${x},${y},${z}`) : -1; }
-
-            addFace(x, y, z, type, verts, uvs, inds, off) {
-                const s = 0.5;
-                const v = [
-                    {x:-s,y:-s,z:s}, {x:s,y:-s,z:s}, {x:s,y:s,z:s}, {x:-s,y:s,z:s}, // F
-                    {x:s,y:-s,z:-s}, {x:-s,y:-s,z:-s}, {x:-s,y:s,z:-s}, {x:s,y:s,z:-s}, // B
-                    {x:-s,y:s,z:s}, {x:s,y:s,z:s}, {x:s,y:s,z:-s}, {x:-s,y:s,z:-s}, // T
-                    {x:-s,y:-s,z:-s}, {x:s,y:-s,z:-s}, {x:s,y:-s,z:s}, {x:-s,y:-s,z:s}, // Bot
-                    {x:s,y:-s,z:s}, {x:s,y:-s,z:-s}, {x:s,y:s,z:-s}, {x:s,y:s,z:s}, // R
-                    {x:-s,y:-s,z:-s}, {x:-s,y:-s,z:s}, {x:-s,y:s,z:s}, {x:-s,y:s,z:-s}  // L
-                ];
-                for(let i=0; i<24; i++) verts.push(v[i].x+x, v[i].y+y, v[i].z+z);
-                const pat = [0,1,2, 0,2,3];
-                for(let f=0; f<6; f++) for(let p=0; p<6; p++) inds.push(off + f*4 + pat[p]);
-                
-                const step = 1/7; const u = type*step;
-                for(let f=0; f<6; f++) uvs.push(u,0, u+step,0, u+step,1, u,1);
+            addFace(x,y,z,t,v,u,ind,off) {
+                const s=0.5;
+                const vert=[{x:-s,y:-s,z:s},{x:s,y:-s,z:s},{x:s,y:s,z:s},{x:-s,y:s,z:s},{x:s,y:-s,z:-s},{x:-s,y:-s,z:-s},{x:-s,y:s,z:-s},{x:s,y:s,z:-s},{x:-s,y:s,z:s},{x:s,y:s,z:s},{x:s,y:s,z:-s},{x:-s,y:s,z:-s},{x:-s,y:-s,z:-s},{x:s,y:-s,z:-s},{x:s,y:-s,z:s},{x:-s,y:-s,z:s},{x:s,y:-s,z:s},{x:s,y:-s,z:-s},{x:s,y:s,z:-s},{x:s,y:s,z:s},{x:-s,y:-s,z:-s},{x:-s,y:-s,z:s},{x:-s,y:s,z:s},{x:-s,y:s,z:-s}];
+                for(let i=0;i<24;i++) v.push(vert[i].x+x, vert[i].y+y, vert[i].z+z);
+                const p=[0,1,2,0,2,3]; for(let f=0;f<6;f++) for(let k=0;k<6;k++) ind.push(off+f*4+p[k]);
+                const step=1/7, u0=t*step; for(let f=0;f<6;f++) u.push(u0,0,u0+step,0,u0+step,1,u0,1);
             }
-
-            createMesh(v, u, i, mat) {
-                const geo = new THREE.BufferGeometry();
-                geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
-                geo.setAttribute('uv', new THREE.Float32BufferAttribute(u, 2));
-                geo.setIndex(i);
-                geo.computeVertexNormals();
-                const m = new THREE.Mesh(geo, mat);
-                m.chunk = this;
-                scene.add(m);
-                return m;
+            buildMesh(v,u,i,mat) {
+                const g=new THREE.BufferGeometry();
+                g.setAttribute('position',new THREE.Float32BufferAttribute(v,3));
+                g.setAttribute('uv',new THREE.Float32BufferAttribute(u,2));
+                g.setIndex(i); g.computeVertexNormals();
+                const m=new THREE.Mesh(g,mat); scene.add(m); return m;
             }
-
-            dispose() {
-                if(this.meshSolid) { this.meshSolid.geometry.dispose(); scene.remove(this.meshSolid); }
-                if(this.meshWater) { this.meshWater.geometry.dispose(); scene.remove(this.meshWater); }
-            }
-
-            modify(x, y, z, action, type) {
-                const key = `${x},${y},${z}`;
-                if(action==='destroy') {
-                    this.data.set(key, 0);
-                    spawnParticles(x, y, z); // Mining effect
+            dispose() { if(this.meshS) { scene.remove(this.meshS); this.meshS.geometry.dispose(); } if(this.meshW) { scene.remove(this.meshW); this.meshW.geometry.dispose(); } }
+            modify(x,y,z,act,type) {
+                const k=`${x},${y},${z}`;
+                if(act==='destroy') {
+                     // Check type to drop item
+                     let dropType = 1; // Default dirt
+                     // Very simple drop logic based on what we think is there
+                     // In real engine we'd read back the type.
+                     spawnDrop(x,y,z, dropType); 
+                     spawnParticles(x,y,z);
+                     this.data.set(k,0);
                 }
-                if(action==='place') this.data.set(key, type + 1);
+                if(act==='place') this.data.set(k,type+1);
                 this.generate();
             }
         }
 
-        // --- PARTICLE SYSTEM (MINING DEBRIS) ---
+        // --- PARTICLE & DROPS ---
+        const drops = [];
         const particles = [];
-        const partGeo = new THREE.BoxGeometry(0.15, 0.15, 0.15);
-        const partMat = new THREE.MeshBasicMaterial({ color: 0x555555 }); // Grey debris
-        
+        const miniBlockGeo = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+        const partGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+        let blocksCollected = 0;
+
+        function spawnDrop(x, y, z, type) {
+            // Random color based on mining generally
+            const mat = new THREE.MeshBasicMaterial({ color: 0x888888 }); 
+            const drop = new THREE.Mesh(miniBlockGeo, mat);
+            drop.position.set(x, y+0.5, z);
+            drop.velocity = new THREE.Vector3((Math.random()-0.5)*2, 3, (Math.random()-0.5)*2);
+            drop.isCollected = false;
+            scene.add(drop);
+            drops.push(drop);
+        }
+
         function spawnParticles(x, y, z) {
-            for(let i=0; i<8; i++) {
-                const mesh = new THREE.Mesh(partGeo, partMat);
-                mesh.position.set(x + (Math.random()-0.5), y + (Math.random()-0.5), z + (Math.random()-0.5));
-                mesh.vel = new THREE.Vector3((Math.random()-0.5)*5, Math.random()*5, (Math.random()-0.5)*5);
-                scene.add(mesh);
-                particles.push(mesh);
+            for(let i=0; i<6; i++) {
+                const p = new THREE.Mesh(partGeo, new THREE.MeshBasicMaterial({color:0x555555}));
+                p.position.set(x+(Math.random()-0.5), y+(Math.random()-0.5), z+(Math.random()-0.5));
+                p.vel = new THREE.Vector3((Math.random()-0.5)*5, Math.random()*5, (Math.random()-0.5)*5);
+                scene.add(p);
+                particles.push(p);
             }
         }
 
-        // --- INFINITE LOGIC ---
-        let currentCX = 0, currentCZ = 0;
+        // --- INFINITE ---
+        let cx=0, cz=0;
         function updateChunks() {
-            const px = Math.floor(camera.position.x / CHUNK_SIZE);
-            const pz = Math.floor(camera.position.z / CHUNK_SIZE);
-            if(px === currentCX && pz === currentCZ) return;
-            currentCX = px; currentCZ = pz;
-            document.getElementById('coords').innerText = `${Math.floor(camera.position.x)}, ${Math.floor(camera.position.y)}, ${Math.floor(camera.position.z)}`;
-
-            for(let x = -RENDER_DISTANCE; x <= RENDER_DISTANCE; x++) {
-                for(let z = -RENDER_DISTANCE; z <= RENDER_DISTANCE; z++) {
-                    const k = `${px+x},${pz+z}`;
-                    if(!chunks.has(k)) chunks.set(k, new Chunk(px+x, pz+z));
+            const px=Math.floor(camera.position.x/CHUNK_SIZE), pz=Math.floor(camera.position.z/CHUNK_SIZE);
+            if(px===cx && pz===cz) return;
+            cx=px; cz=pz;
+            for(let x=-RENDER_DISTANCE; x<=RENDER_DISTANCE; x++)
+                for(let z=-RENDER_DISTANCE; z<=RENDER_DISTANCE; z++) {
+                    const k=`${px+x},${pz+z}`; if(!chunks.has(k)) chunks.set(k, new Chunk(px+x, pz+z));
                 }
-            }
-            for(const [k, c] of chunks) {
-                if(Math.abs(c.cx - px) > RENDER_DISTANCE+1 || Math.abs(c.cz - pz) > RENDER_DISTANCE+1) {
-                    c.dispose(); chunks.delete(k);
-                }
-            }
+            for(const [k,c] of chunks) if(Math.abs(c.cx-px)>RENDER_DISTANCE+1 || Math.abs(c.cz-pz)>RENDER_DISTANCE+1) { c.dispose(); chunks.delete(k); }
         }
 
-        // --- INTERACTION ---
+        // --- INPUT & MINING LOGIC ---
         const controls = new PointerLockControls(camera, document.body);
         const raycaster = new THREE.Raycaster();
         let selectedBlock = 0;
-        let isMining = false;
+        let isMouseDown = false;
+        let miningTimer = 0;
+        let targetBlock = null; // {x,y,z, chunkKey, hardness}
 
-        // Selection Box
-        const selBox = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1.01,1.01,1.01)), new THREE.LineBasicMaterial({color:0x000000}));
-        scene.add(selBox); selBox.visible = false;
-
-        document.addEventListener('click', () => controls.lock());
-        document.addEventListener('keydown', e => {
-            if(e.key >= '1' && e.key <= '7') {
-                selectedBlock = parseInt(e.key)-1;
-                document.getElementById('slot').innerText = BLOCK_NAMES[selectedBlock];
-            }
+        document.addEventListener('click', ()=>controls.lock());
+        document.addEventListener('keydown', e=>{
+            if(e.key>='1' && e.key<='7') { selectedBlock=parseInt(e.key)-1; document.getElementById('slot').innerText=BLOCK_NAMES[selectedBlock]; }
         });
+        document.addEventListener('mousedown', e=>{ if(controls.isLocked) { isMouseDown=true; if(e.button===2) tryPlace(); } });
+        document.addEventListener('mouseup', ()=>{ isMouseDown=false; miningTimer=0; resetMiningUI(); });
 
-        document.addEventListener('mousedown', e => {
-            if(!controls.isLocked) return;
-            // Hand Animation
-            handMesh.position.z = -1.5; // Punch forward
-            setTimeout(() => handMesh.position.z = -1, 150); // Return
-
-            raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
-            const meshes = Array.from(chunks.values()).map(c => c.meshSolid).filter(m => m);
-            const hits = raycaster.intersectObjects(meshes);
-
-            if(hits.length > 0 && hits[0].distance < 5) {
-                const hit = hits[0];
-                const nx = hit.face.normal.x, ny = hit.face.normal.y, nz = hit.face.normal.z;
-                const x = Math.floor(hit.point.x - nx*0.1);
-                const y = Math.floor(hit.point.y - ny*0.1);
-                const z = Math.floor(hit.point.z - nz*0.1);
-                const key = `${Math.floor(x/CHUNK_SIZE)},${Math.floor(z/CHUNK_SIZE)}`;
-
-                if(e.button === 0 && chunks.has(key)) chunks.get(key).modify(x, y, z, 'destroy');
-                else if(e.button === 2) {
-                    const px = Math.floor(hit.point.x + nx*0.1);
-                    const py = Math.floor(hit.point.y + ny*0.1);
-                    const pz = Math.floor(hit.point.z + nz*0.1);
-                    // No placing inside player
-                    if(new THREE.Vector3(px,py,pz).distanceTo(camera.position) > 1.5) {
-                        const pkey = `${Math.floor(px/CHUNK_SIZE)},${Math.floor(pz/CHUNK_SIZE)}`;
-                        if(chunks.has(pkey)) chunks.get(pkey).modify(px, py, pz, 'place', selectedBlock);
-                    }
-                }
-            }
-        });
-
-        // --- PHYSICS LOOP ---
-        const velocity = new THREE.Vector3();
-        const direction = new THREE.Vector3();
-        const keys = {w:0, a:0, s:0, d:0, sp:0};
-        let canJump = false;
-        let inWater = false;
-
-        document.addEventListener('keydown', e => {
-            if(e.code==='KeyW') keys.w=1; if(e.code==='KeyA') keys.a=1;
-            if(e.code==='KeyS') keys.s=1; if(e.code==='KeyD') keys.d=1;
-            if(e.code==='Space') keys.sp=1;
-        });
-        document.addEventListener('keyup', e => {
-            if(e.code==='KeyW') keys.w=0; if(e.code==='KeyA') keys.a=0;
-            if(e.code==='KeyS') keys.s=0; if(e.code==='KeyD') keys.d=0;
-            if(e.code==='Space') keys.sp=0;
-        });
-
-        const clock = new THREE.Clock();
-        
-        function checkWater() {
-            // Check if head is submerged
-            const cx = Math.floor(camera.position.x);
-            const cy = Math.floor(camera.position.y);
-            const cz = Math.floor(camera.position.z);
-            
-            // Simple check based on height and if no void modification exists
-            // A robust check looks at chunk data, but level check is fast for this scope
-            // We assume water is everywhere at WATER_LEVEL unless overwritten
-            if(cy <= WATER_LEVEL) {
-                // Check if space is actually water (not dug out air or block)
-                const cKey = `${Math.floor(cx/CHUNK_SIZE)},${Math.floor(cz/CHUNK_SIZE)}`;
-                const chunk = chunks.get(cKey);
-                // If chunk doesn't say "Air" or "Solid" here, it's water
-                if(chunk && !chunk.data.has(`${cx},${cy},${cz}`)) {
-                    return true;
-                }
-            }
-            return false;
+        function resetMiningUI() {
+            document.getElementById('mining-ring').style.opacity = 0;
         }
 
+        function tryPlace() {
+            // Hand Anim
+            handMesh.position.z = -1.2; setTimeout(()=>handMesh.position.z=-0.8, 100);
+            
+            raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+            const meshes = Array.from(chunks.values()).map(c=>c.meshS).filter(m=>m);
+            const h = raycaster.intersectObjects(meshes)[0];
+            if(h && h.distance < 5) {
+                const n=h.face.normal;
+                const x=Math.floor(h.point.x+n.x*0.1), y=Math.floor(h.point.y+n.y*0.1), z=Math.floor(h.point.z+n.z*0.1);
+                if(new THREE.Vector3(x+0.5,y,z+0.5).distanceTo(camera.position)<1.5) return; // Player collision
+                const k=`${Math.floor(x/CHUNK_SIZE)},${Math.floor(z/CHUNK_SIZE)}`;
+                if(chunks.has(k)) chunks.get(k).modify(x,y,z,'place',selectedBlock);
+            }
+        }
+
+        function updateMining(delta) {
+            if(!isMouseDown) return;
+
+            raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+            const meshes = Array.from(chunks.values()).map(c=>c.meshS).filter(m=>m);
+            const h = raycaster.intersectObjects(meshes)[0];
+
+            if(h && h.distance < 5) {
+                const x=Math.floor(h.point.x-h.face.normal.x*0.1);
+                const y=Math.floor(h.point.y-h.face.normal.y*0.1);
+                const z=Math.floor(h.point.z-h.face.normal.z*0.1);
+                
+                // Determine Block Type for Hardness
+                // Simplification: We guess hardness based on height or default
+                let type = 1; 
+                if(y<-3) type=2; // Stone
+                
+                const hardness = HARDNESS[type] || 0.5;
+
+                // UI Update
+                const ring = document.getElementById('mining-ring');
+                const fill = document.getElementById('mining-fill');
+                ring.style.opacity = 1;
+                
+                miningTimer += delta;
+                
+                // Shake hand
+                handMesh.position.x = 0.4 + Math.sin(Date.now()*0.05)*0.02;
+                handMesh.position.y = -0.4 + Math.cos(Date.now()*0.05)*0.02;
+
+                // Calc percentage
+                const percent = Math.min((miningTimer / hardness) * 100, 100);
+                // Clip path logic for pie chart
+                if(percent < 50) {
+                     // CSS hacks for circular progress are messy, using simple scale for stability
+                     fill.style.border = 'none';
+                     ring.style.width = (percent/2) + '%';
+                     ring.style.height = (percent/2) + '%';
+                     ring.style.top = (50 - percent/4) + '%';
+                     ring.style.left = (50 - percent/4) + '%';
+                } else {
+                     ring.style.width = '20px'; ring.style.height='20px'; ring.style.top='0'; ring.style.left='0';
+                     ring.style.borderColor = `rgb(255, ${255 - (percent-50)*5}, 0)`;
+                }
+
+                if(miningTimer >= hardness) {
+                    const k=`${Math.floor(x/CHUNK_SIZE)},${Math.floor(z/CHUNK_SIZE)}`;
+                    if(chunks.has(k)) chunks.get(k).modify(x,y,z,'destroy');
+                    miningTimer = 0;
+                    resetMiningUI();
+                    
+                    // Punch anim
+                    handMesh.position.z = -1.5; setTimeout(()=>handMesh.position.z=-0.8, 100);
+                }
+            } else {
+                miningTimer = 0;
+                resetMiningUI();
+            }
+        }
+
+        // --- PHYSICS LOOP ---
+        const vel=new THREE.Vector3(), dir=new THREE.Vector3();
+        const keys={w:0,a:0,s:0,d:0,sp:0};
+        document.addEventListener('keydown',e=>{ if(e.code==='KeyW')keys.w=1; if(e.code==='KeyA')keys.a=1; if(e.code==='KeyS')keys.s=1; if(e.code==='KeyD')keys.d=1; if(e.code==='Space')keys.sp=1; });
+        document.addEventListener('keyup',e=>{ if(e.code==='KeyW')keys.w=0; if(e.code==='KeyA')keys.a=0; if(e.code==='KeyS')keys.s=0; if(e.code==='KeyD')keys.d=0; if(e.code==='Space')keys.sp=0; });
+
+        const clock = new THREE.Clock();
         function animate() {
             requestAnimationFrame(animate);
             if(controls.isLocked) {
-                const delta = Math.min(clock.getDelta(), 0.1);
+                const dt = Math.min(clock.getDelta(), 0.1);
+                updateMining(dt);
+
+                // Player Physics
+                const inWater = camera.position.y < WATER_LEVEL;
+                document.getElementById('water-overlay').style.display = inWater?'block':'none';
+                scene.fog.color = inWater?waterColor:skyColor; scene.background=inWater?waterColor:skyColor;
                 
-                // Hand Bobbing
-                if(keys.w || keys.a || keys.s || keys.d) {
-                    handMesh.position.y = -0.5 + Math.sin(Date.now()*0.015)*0.05;
-                    handMesh.position.x = 0.5 + Math.cos(Date.now()*0.015)*0.05;
-                }
+                const f = inWater?2:10, s = inWater?20:50, g = inWater?5:30;
+                vel.x -= vel.x*f*dt; vel.z -= vel.z*f*dt; vel.y -= g*dt;
+                dir.z=keys.w-keys.s; dir.x=keys.d-keys.a; dir.normalize();
+                if(keys.w||keys.s) vel.z -= dir.z*s*dt; if(keys.a||keys.d) vel.x -= dir.x*s*dt;
+                controls.moveRight(-vel.x*dt); controls.moveForward(-vel.z*dt); camera.position.y+=vel.y*dt;
 
-                // Physics Settings based on Environment
-                inWater = checkWater();
-                const friction = inWater ? 2.0 : 10.0;
-                const speed = inWater ? 20.0 : 50.0;
-                const gravity = inWater ? 5.0 : 30.0;
-                
-                // Visuals
-                document.getElementById('water-overlay').style.display = inWater ? 'block' : 'none';
-                scene.fog.color = inWater ? waterColor : skyColor;
-                scene.background = inWater ? waterColor : skyColor;
-                scene.fog.near = inWater ? 1 : 20;
-                scene.fog.far = inWater ? 15 : 60;
-
-                velocity.x -= velocity.x * friction * delta;
-                velocity.z -= velocity.z * friction * delta;
-                velocity.y -= gravity * delta;
-
-                direction.z = keys.w - keys.s;
-                direction.x = keys.d - keys.a;
-                direction.normalize();
-
-                if (keys.w || keys.s) velocity.z -= direction.z * speed * delta;
-                if (keys.a || keys.d) velocity.x -= direction.x * speed * delta;
-
-                controls.moveRight(-velocity.x * delta);
-                controls.moveForward(-velocity.z * delta);
-                camera.position.y += velocity.y * delta;
-
-                // --- COLLISIONS ---
-                // Only collide with SOLID meshes
-                const solidMeshes = Array.from(chunks.values()).map(c => c.meshSolid).filter(m => m);
-                
-                // Floor / Ceiling
-                const rayDown = new THREE.Raycaster(camera.position, new THREE.Vector3(0,-1,0), 0, 1.8);
-                const hits = rayDown.intersectObjects(solidMeshes);
-                
-                if(hits.length > 0) {
-                    velocity.y = Math.max(0, velocity.y);
-                    camera.position.y = hits[0].point.y + 1.6;
-                    canJump = true;
-                }
-
-                if(keys.sp) {
-                    if(inWater) velocity.y = 4; // Swim up
-                    else if(canJump) { velocity.y = 10; canJump = false; }
-                }
-
-                // Update Highlight Box
-                raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
-                const selHits = raycaster.intersectObjects(solidMeshes);
-                if(selHits.length > 0 && selHits[0].distance < 5) {
-                    const h = selHits[0];
-                    selBox.visible = true;
-                    selBox.position.set(
-                        Math.floor(h.point.x - h.face.normal.x*0.1) + 0.5,
-                        Math.floor(h.point.y - h.face.normal.y*0.1) + 0.5,
-                        Math.floor(h.point.z - h.face.normal.z*0.1) + 0.5
-                    );
-                } else selBox.visible = false;
+                // Collision
+                const solid = Array.from(chunks.values()).map(c=>c.meshS).filter(m=>m);
+                const ray = new THREE.Raycaster(camera.position, new THREE.Vector3(0,-1,0),0,1.8);
+                if(ray.intersectObjects(solid).length>0) { vel.y=Math.max(0,vel.y); camera.position.y=Math.ceil(camera.position.y-1.8)+1.6; }
+                if(keys.sp) { if(inWater) vel.y=4; else if(ray.intersectObjects(solid).length>0) vel.y=10; }
 
                 updateChunks();
-            }
 
-            // Particles
-            for(let i=particles.length-1; i>=0; i--) {
-                const p = particles[i];
-                p.position.add(p.vel.clone().multiplyScalar(0.01));
-                p.vel.y -= 0.1; // Grav
-                p.scale.multiplyScalar(0.9);
-                if(p.scale.x < 0.01) { scene.remove(p); particles.splice(i,1); }
+                // Drop Physics & Pickup
+                for(let i=drops.length-1; i>=0; i--) {
+                    const d = drops[i];
+                    d.rotation.y += 2*dt; d.rotation.x += 1*dt;
+                    d.velocity.y -= 20*dt; // Gravity
+                    d.position.add(d.velocity.clone().multiplyScalar(dt));
+                    
+                    // Floor collision simple
+                    if(d.position.y < -10) { scene.remove(d); drops.splice(i,1); continue; }
+                    
+                    // Magnet to player
+                    const dist = d.position.distanceTo(camera.position);
+                    if(dist < 3) {
+                        // Fly to player
+                        const dir = new THREE.Vector3().subVectors(camera.position, d.position).normalize();
+                        d.position.add(dir.multiplyScalar(10*dt));
+                        if(dist < 1) {
+                            scene.remove(d); drops.splice(i,1);
+                            blocksCollected++;
+                            document.getElementById('score').innerText = blocksCollected;
+                            const msg = document.getElementById('pickup-msg');
+                            msg.style.opacity=1; setTimeout(()=>msg.style.opacity=0, 1000);
+                        }
+                    }
+                }
+                
+                // Particles
+                for(let i=particles.length-1; i>=0; i--) {
+                    const p=particles[i]; p.position.add(p.vel.clone().multiplyScalar(0.01));
+                    p.vel.y-=0.1; p.scale.multiplyScalar(0.9);
+                    if(p.scale.x<0.01){ scene.remove(p); particles.splice(i,1); }
+                }
             }
-
-            if(camera.position.y < -30) { camera.position.set(0,20,0); velocity.set(0,0,0); }
+            if(camera.position.y<-30) { camera.position.set(0,20,0); vel.set(0,0,0); }
             renderer.render(scene, camera);
         }
-
-        camera.position.set(0, 10, 0);
-        updateChunks();
-        animate();
         
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
+        camera.position.set(0,10,0); updateChunks(); animate();
+        window.onresize=()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);}
     </script>
 </body>
 </html>
