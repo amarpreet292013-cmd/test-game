@@ -2,39 +2,58 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Single File Minecraft</title>
+    <title>Infinite Ocean & Mining</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #87CEEB; font-family: sans-serif; }
+        body { margin: 0; overflow: hidden; font-family: 'Courier New', Courier, monospace; }
         #crosshair {
             position: absolute; top: 50%; left: 50%;
-            width: 20px; height: 20px;
-            background-color: transparent;
-            border: 2px solid white; border-radius: 50%;
+            width: 16px; height: 16px;
+            background: transparent;
+            border: 2px solid rgba(255, 255, 255, 0.8);
+            border-radius: 50%;
             transform: translate(-50%, -50%);
             pointer-events: none; z-index: 10;
         }
-        #instructions {
-            position: absolute; top: 10px; left: 10px; color: white;
-            background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px;
-            pointer-events: none;
+        #ui {
+            position: absolute; top: 10px; left: 10px;
+            color: white; background: rgba(0,0,0,0.6);
+            padding: 10px; border-radius: 4px; pointer-events: none;
         }
+        #hotbar {
+            position: absolute; bottom: 20px; left: 50%;
+            transform: translateX(-50%);
+            display: flex; gap: 5px;
+            background: rgba(0,0,0,0.5); padding: 5px; border-radius: 5px;
+        }
+        .slot {
+            width: 40px; height: 40px; border: 2px solid #555;
+            display: flex; justify-content: center; align-items: center;
+            color: white; font-weight: bold; font-size: 12px;
+        }
+        .active { border-color: white; background: rgba(255,255,255,0.2); }
     </style>
 </head>
 <body>
     <div id="crosshair"></div>
-    <div id="instructions">
-        <b>Click to Start</b><br>
-        WASD to Move | Space to Jump<br>
-        Left Click: Break Block<br>
-        Right Click: Place Block<br>
-        1-3: Change Color
+    <div id="ui">
+        <b>Infinite Mining World</b><br>
+        WASD = Move | Space = Jump<br>
+        L-Click = Mine | R-Click = Build<br>
+        Keys 1-5 = Select Block
+    </div>
+    <div id="hotbar">
+        <div class="slot active" id="slot1">1</div>
+        <div class="slot" id="slot2">2</div>
+        <div class="slot" id="slot3">3</div>
+        <div class="slot" id="slot4">4</div>
+        <div class="slot" id="slot5">5</div>
     </div>
 
     <script type="importmap">
         {
             "imports": {
-                "three": "https://unpkg.com/three@0.150.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.150.0/examples/jsm/"
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
             }
         }
     </script>
@@ -43,178 +62,359 @@
         import * as THREE from 'three';
         import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
-        // --- SETUP ---
+        // --- 1. PROCEDURAL TEXTURE GENERATOR (No external images needed) ---
+        function createTexture(color, noiseAmount = 20) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64; canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = color;
+            ctx.fillRect(0,0,64,64);
+            for(let i=0; i<400; i++) {
+                ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.1})`;
+                ctx.fillRect(Math.random()*64, Math.random()*64, 2, 2);
+            }
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.magFilter = THREE.NearestFilter; // Pixelated look
+            return tex;
+        }
+
+        const textures = {
+            dirt: createTexture('#5d4037'),
+            grass: createTexture('#4caf50'),
+            stone: createTexture('#757575'),
+            sand: createTexture('#fff176'),
+            water: createTexture('#29b6f6', 5),
+            wood: createTexture('#3e2723'),
+            leaf: createTexture('#2e7d32'),
+            lava: createTexture('#ff5722'),
+            bedrock: createTexture('#000000')
+        };
+        
+        // Materials map
+        const materials = [
+            new THREE.MeshLambertMaterial({ map: textures.dirt }), // 0
+            new THREE.MeshLambertMaterial({ map: textures.stone }), // 1
+            new THREE.MeshLambertMaterial({ map: textures.wood }), // 2
+            new THREE.MeshLambertMaterial({ map: textures.leaf, transparent: true, opacity: 0.9 }), // 3
+            new THREE.MeshBasicMaterial({ map: textures.lava }), // 4 (Bright)
+            new THREE.MeshLambertMaterial({ map: textures.grass }), // 5
+            new THREE.MeshLambertMaterial({ map: textures.sand }), // 6
+            new THREE.MeshLambertMaterial({ map: textures.water, transparent: true, opacity: 0.6 }), // 7
+            new THREE.MeshLambertMaterial({ map: textures.bedrock }) // 8
+        ];
+
+        // --- 2. NOISE FUNCTION (Simplex Noise Lite) ---
+        // simplified pseudo-random noise for terrain height
+        class SimpleNoise {
+            constructor() { this.p = new Uint8Array(512); for(let i=0;i<512;i++) this.p[i] = Math.random()*256; }
+            dot(g, x, y) { return g[0]*x + g[1]*y; }
+            noise(x, y) {
+                // Very basic smoothing implementation for brevity
+                let n = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+                return n - Math.floor(n);
+            }
+            smoothNoise(x, y) {
+                // Super simple "hills" using overlapping sine waves
+                return (Math.sin(x/15) + Math.sin(y/15) + Math.sin((x+y)/20) * 0.5) / 2.5; 
+            }
+        }
+        const noiseGen = new SimpleNoise();
+
+        // --- 3. WORLD SETTINGS ---
+        const CHUNK_SIZE = 16;
+        const RENDER_DISTANCE = 3; // Radius of chunks to render
+        const WORLD_HEIGHT = 32;
+        const WATER_LEVEL = -2;
+
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB); // Sky color
-        scene.fog = new THREE.Fog(0x87CEEB, 10, 50);
+        scene.background = new THREE.Color(0x87CEEB);
+        scene.fog = new THREE.Fog(0x87CEEB, 20, 60);
 
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.y = 2;
-
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: false });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
-        // --- LIGHTING ---
-        const ambientLight = new THREE.AmbientLight(0xcccccc, 0.6);
-        scene.add(ambientLight);
+        // Lights
+        const ambient = new THREE.AmbientLight(0xffffff, 0.7);
+        scene.add(ambient);
+        const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+        sun.position.set(50, 100, 50);
+        scene.add(sun);
 
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        dirLight.position.set(10, 20, 10);
-        scene.add(dirLight);
-
-        // --- CONTROLS ---
-        const controls = new PointerLockControls(camera, document.body);
-        const instructions = document.getElementById('instructions');
-
-        document.body.addEventListener('click', () => {
-            controls.lock();
-        });
-
-        controls.addEventListener('lock', () => {
-            instructions.style.display = 'none';
-        });
-
-        controls.addEventListener('unlock', () => {
-            instructions.style.display = 'block';
-        });
-
-        // --- WORLD GENERATION ---
-        const objects = []; // Stores all blocks for collision/raycasting
-        const geometry = new THREE.BoxGeometry(1, 1, 1);
+        // --- 4. CHUNK MANAGEMENT ---
+        const activeChunks = new Map(); // Key: "x,z", Value: array of meshes
+        const blockMap = new Map(); // Key: "x,y,z", Value: mesh object (for raycasting)
         
-        // Materials (Grass, Dirt, Stone)
-        const materials = [
-            new THREE.MeshLambertMaterial({ color: 0x55aa55 }), // Green
-            new THREE.MeshLambertMaterial({ color: 0x885533 }), // Brown
-            new THREE.MeshLambertMaterial({ color: 0x888888 })  // Grey
-        ];
-        let currentMaterialIndex = 0;
+        const geometry = new THREE.BoxGeometry(1,1,1);
+        
+        function getChunkKey(x, z) {
+            return `${Math.floor(x / CHUNK_SIZE)},${Math.floor(z / CHUNK_SIZE)}`;
+        }
 
-        // Create Floor
-        const floorSize = 20;
-        for (let x = -floorSize; x < floorSize; x++) {
-            for (let z = -floorSize; z < floorSize; z++) {
-                const material = (x + z) % 2 === 0 ? materials[0] : new THREE.MeshLambertMaterial({ color: 0x4da04d });
-                const block = new THREE.Mesh(geometry, material);
-                block.position.set(x, 0, z);
-                scene.add(block);
-                objects.push(block);
+        function createBlock(x, y, z, matIndex) {
+            const mesh = new THREE.Mesh(geometry, materials[matIndex]);
+            mesh.position.set(x, y, z);
+            mesh.matrixAutoUpdate = false; // Optimization
+            mesh.updateMatrix();
+            scene.add(mesh);
+            
+            // Store for physics/raycast
+            const key = `${x},${y},${z}`;
+            blockMap.set(key, { mesh: mesh, type: matIndex });
+            
+            return mesh;
+        }
+
+        function generateTree(x, y, z, chunkBlocks) {
+            const height = Math.floor(Math.random() * 3) + 3;
+            // Trunk
+            for(let i=0; i<height; i++) {
+                chunkBlocks.push(createBlock(x, y+i, z, 2)); // Wood
+            }
+            // Leaves
+            for(let lx=x-2; lx<=x+2; lx++) {
+                for(let ly=y+height-2; ly<=y+height+1; ly++) {
+                    for(let lz=z-2; lz<=z+2; lz++) {
+                        if (Math.abs(lx-x) + Math.abs(ly-(y+height-1)) + Math.abs(lz-z) <= 3) {
+                             // Don't overwrite wood
+                             if(lx!==x || lz!==z || ly>=y+height) {
+                                chunkBlocks.push(createBlock(lx, ly, lz, 3)); // Leaf
+                             }
+                        }
+                    }
+                }
             }
         }
 
-        // --- INTERACTION (RAYCASTING) ---
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2();
+        function generateChunk(cx, cz) {
+            const chunkBlocks = [];
+            const startX = cx * CHUNK_SIZE;
+            const startZ = cz * CHUNK_SIZE;
 
-        // Key listeners for block selection
-        document.addEventListener('keydown', (event) => {
-            if(event.key === '1') currentMaterialIndex = 0;
-            if(event.key === '2') currentMaterialIndex = 1;
-            if(event.key === '3') currentMaterialIndex = 2;
-        });
+            for (let x = startX; x < startX + CHUNK_SIZE; x++) {
+                for (let z = startZ; z < startZ + CHUNK_SIZE; z++) {
+                    // Terrain Height
+                    let h = Math.floor(noiseGen.smoothNoise(x, z) * 8); // -8 to 8
+                    
+                    // Bedrock
+                    chunkBlocks.push(createBlock(x, -15, z, 8)); 
 
-        document.addEventListener('mousedown', (event) => {
-            if (!controls.isLocked) return;
+                    // Fill column
+                    for (let y = -14; y <= h; y++) {
+                        let mat = 1; // Stone
+                        if (y === h) mat = 5; // Grass
+                        if (y === h && y < WATER_LEVEL) mat = 6; // Sand if underwater
+                        if (y < h - 3) mat = 1; // Stone deep down
+                        if (y >= h - 3 && y < h) mat = 0; // Dirt near top
+                        
+                        // Rare Lava pockets deep down
+                        if (y < -10 && Math.random() > 0.95) mat = 4;
 
-            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
-            const intersects = raycaster.intersectObjects(objects);
+                        chunkBlocks.push(createBlock(x, y, z, mat));
+                    }
 
-            if (intersects.length > 0) {
-                const intersect = intersects[0];
+                    // Water
+                    for (let y = h + 1; y <= WATER_LEVEL; y++) {
+                        chunkBlocks.push(createBlock(x, y, z, 7));
+                    }
 
-                // Left Click: Remove Block (0 = Left Click)
-                if (event.button === 0) { 
-                    // Don't delete the bedrock (y=0) if you want to keep a floor
-                    if(intersect.object.position.y > 0) {
-                        scene.remove(intersect.object);
-                        objects.splice(objects.indexOf(intersect.object), 1);
+                    // Trees (Rare, only on grass above water)
+                    if (h > WATER_LEVEL && Math.random() > 0.98) {
+                        generateTree(x, h+1, z, chunkBlocks);
                     }
                 }
-                
-                // Right Click: Add Block (2 = Right Click)
-                if (event.button === 2) { 
-                    const voxel = new THREE.Mesh(geometry, materials[currentMaterialIndex]);
-                    // Place block adjacent to the face we clicked
-                    voxel.position.copy(intersect.point).add(intersect.face.normal).floor().addScalar(0.5);
-                    scene.add(voxel);
-                    objects.push(voxel);
+            }
+            return chunkBlocks;
+        }
+
+        function updateChunks() {
+            const px = Math.floor(camera.position.x / CHUNK_SIZE);
+            const pz = Math.floor(camera.position.z / CHUNK_SIZE);
+
+            // Load new chunks
+            for (let x = -RENDER_DISTANCE; x <= RENDER_DISTANCE; x++) {
+                for (let z = -RENDER_DISTANCE; z <= RENDER_DISTANCE; z++) {
+                    const key = `${px + x},${pz + z}`;
+                    if (!activeChunks.has(key)) {
+                        activeChunks.set(key, generateChunk(px + x, pz + z));
+                    }
+                }
+            }
+
+            // Unload far chunks (Simple garbage collection)
+            for (const [key, meshes] of activeChunks) {
+                const [cx, cz] = key.split(',').map(Number);
+                const dist = Math.sqrt((cx - px)**2 + (cz - pz)**2);
+                if (dist > RENDER_DISTANCE + 1) {
+                    meshes.forEach(m => {
+                        scene.remove(m);
+                        m.geometry.dispose();
+                        blockMap.delete(`${m.position.x},${m.position.y},${m.position.z}`);
+                    });
+                    activeChunks.delete(key);
+                }
+            }
+        }
+
+        // --- 5. INTERACTION & PHYSICS ---
+        const controls = new PointerLockControls(camera, document.body);
+        document.addEventListener('click', () => controls.lock());
+
+        // Hotbar
+        let selectedBlock = 0; // Dirt
+        const materialMap = [0, 1, 2, 3, 4]; // Dirt, Stone, Wood, Leaf, Lava
+        document.addEventListener('keydown', (e) => {
+            if(e.key >= '1' && e.key <= '5') {
+                document.querySelectorAll('.slot').forEach(s => s.classList.remove('active'));
+                document.getElementById('slot'+e.key).classList.add('active');
+                selectedBlock = materialMap[parseInt(e.key)-1];
+            }
+        });
+
+        // Mining/Placing
+        const raycaster = new THREE.Raycaster();
+        const center = new THREE.Vector2(0,0);
+        
+        document.addEventListener('mousedown', (e) => {
+            if(!controls.isLocked) return;
+            raycaster.setFromCamera(center, camera);
+            
+            // Get all blocks in scene is slow, but workable for this scope
+            // Optim: Only check blocks near player? For now, standard intersect.
+            const intersects = raycaster.intersectObjects(scene.children);
+            
+            // Filter out non-blocks if any
+            const valid = intersects.find(i => i.object.geometry && i.distance < 6);
+
+            if(valid) {
+                if(e.button === 0) { // Left: Destroy
+                    if(valid.object.material === materials[8]) return; // Can't break bedrock
+                    scene.remove(valid.object);
+                    blockMap.delete(`${valid.object.position.x},${valid.object.position.y},${valid.object.position.z}`);
+                } else if (e.button === 2) { // Right: Place
+                    const pos = new THREE.Vector3().copy(valid.point).add(valid.face.normal).floor();
+                    // Don't place inside player
+                    if(pos.distanceTo(camera.position) > 1.5) {
+                        const b = createBlock(pos.x, pos.y, pos.z, selectedBlock);
+                        // Add to current chunk list manually (simplified)
+                    }
                 }
             }
         });
 
-        // --- MOVEMENT LOGIC ---
+        // Physics Logic
         const velocity = new THREE.Vector3();
         const direction = new THREE.Vector3();
-        let moveForward = false;
-        let moveBackward = false;
-        let moveLeft = false;
-        let moveRight = false;
         let canJump = false;
-
-        const onKeyDown = function (event) {
-            switch (event.code) {
-                case 'ArrowUp': case 'KeyW': moveForward = true; break;
-                case 'ArrowLeft': case 'KeyA': moveLeft = true; break;
-                case 'ArrowDown': case 'KeyS': moveBackward = true; break;
-                case 'ArrowRight': case 'KeyD': moveRight = true; break;
-                case 'Space': if (canJump === true) velocity.y += 30; canJump = false; break;
+        
+        const keys = { w:false, a:false, s:false, d:false, sp:false };
+        document.addEventListener('keydown', (e) => {
+            switch(e.code) {
+                case 'KeyW': keys.w=true; break;
+                case 'KeyA': keys.a=true; break;
+                case 'KeyS': keys.s=true; break;
+                case 'KeyD': keys.d=true; break;
+                case 'Space': keys.sp=true; break;
             }
-        };
-
-        const onKeyUp = function (event) {
-            switch (event.code) {
-                case 'ArrowUp': case 'KeyW': moveForward = false; break;
-                case 'ArrowLeft': case 'KeyA': moveLeft = false; break;
-                case 'ArrowDown': case 'KeyS': moveBackward = false; break;
-                case 'ArrowRight': case 'KeyD': moveRight = false; break;
+        });
+        document.addEventListener('keyup', (e) => {
+            switch(e.code) {
+                case 'KeyW': keys.w=false; break;
+                case 'KeyA': keys.a=false; break;
+                case 'KeyS': keys.s=false; break;
+                case 'KeyD': keys.d=false; break;
+                case 'Space': keys.sp=false; break;
             }
-        };
+        });
 
-        document.addEventListener('keydown', onKeyDown);
-        document.addEventListener('keyup', onKeyUp);
+        function checkCollision(newPos) {
+            // Simple point check at feet and head
+            const x = Math.round(newPos.x);
+            const y = Math.round(newPos.y - 1.5); // Feet
+            const z = Math.round(newPos.z);
+            
+            const bFeet = blockMap.get(`${x},${y},${z}`);
+            const bHead = blockMap.get(`${x},${y+1},${z}`);
+            
+            // Treat water (mat 7) as non-solid
+            if(bFeet && bFeet.type !== 7) return true;
+            if(bHead && bHead.type !== 7) return true;
+            return false;
+        }
 
         let prevTime = performance.now();
-
-        // --- ANIMATION LOOP ---
+        
         function animate() {
             requestAnimationFrame(animate);
-
-            if (controls.isLocked === true) {
+            
+            if(controls.isLocked) {
                 const time = performance.now();
                 const delta = (time - prevTime) / 1000;
-
-                velocity.x -= velocity.x * 10.0 * delta;
-                velocity.z -= velocity.z * 10.0 * delta;
-                velocity.y -= 9.8 * 10.0 * delta; // Gravity
-
-                direction.z = Number(moveForward) - Number(moveBackward);
-                direction.x = Number(moveRight) - Number(moveLeft);
+                
+                // Movement
+                direction.z = Number(keys.w) - Number(keys.s);
+                direction.x = Number(keys.d) - Number(keys.a);
                 direction.normalize();
 
-                if (moveForward || moveBackward) velocity.z -= direction.z * 40.0 * delta;
-                if (moveLeft || moveRight) velocity.x -= direction.x * 40.0 * delta;
+                if (keys.w || keys.s) velocity.z -= direction.z * 50.0 * delta;
+                if (keys.a || keys.d) velocity.x -= direction.x * 50.0 * delta;
+                
+                // Gravity & Jump
+                velocity.y -= 25.0 * delta; 
+                
+                // Water Physics (Simple check)
+                const footKey = `${Math.round(camera.position.x)},${Math.round(camera.position.y-1)},${Math.round(camera.position.z)}`;
+                const inWater = blockMap.get(footKey)?.type === 7;
 
+                if(inWater) {
+                     velocity.y = Math.max(velocity.y, -2); // Float
+                     if(keys.sp) velocity.y = 5; // Swim up
+                } else if (keys.sp && canJump) {
+                    velocity.y = 10;
+                    canJump = false;
+                }
+
+                // Apply friction
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+
+                // Collision Detection (Simplistic X/Z then Y)
                 controls.moveRight(-velocity.x * delta);
                 controls.moveForward(-velocity.z * delta);
                 
                 camera.position.y += (velocity.y * delta);
 
-                // Simple Floor Collision
-                if (camera.position.y < 2) {
-                    velocity.y = 0;
-                    camera.position.y = 2;
-                    canJump = true;
+                // Floor Collision / Basic "Don't fall through world"
+                // Raycast down for precise ground check
+                const rayDown = new THREE.Raycaster(camera.position, new THREE.Vector3(0,-1,0), 0, 2);
+                const hits = rayDown.intersectObjects(scene.children);
+                
+                if(hits.length > 0 && hits[0].distance < 1.8) {
+                    // Only stop if not water
+                    if(hits[0].object.material !== materials[7]) {
+                        velocity.y = Math.max(0, velocity.y);
+                        canJump = true;
+                    }
                 }
-            }
+                
+                // Kill Plane
+                if(camera.position.y < -30) {
+                    camera.position.y = 20;
+                    velocity.y = 0;
+                }
 
+                // Update Infinite Terrain
+                updateChunks();
+            }
             prevTime = performance.now();
             renderer.render(scene, camera);
         }
 
+        // Init
+        camera.position.y = 10;
         animate();
 
-        // Handle window resize
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
