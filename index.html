@@ -2,36 +2,32 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Minecraft: Physics Sandbox</title>
+    <title>Infinite Minecraft: Stable</title>
     <style>
-        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; user-select: none; }
-        
+        body { margin: 0; overflow: hidden; background: #87CEEB; font-family: monospace; }
         #crosshair {
-            position: absolute; top: 50%; left: 50%;
-            width: 20px; height: 20px;
-            background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20"><path d="M10 0v20M0 10h20" stroke="white" stroke-width="2"/></svg>') no-repeat center;
-            transform: translate(-50%, -50%);
-            z-index: 10; pointer-events: none;
+            position: absolute; top: 50%; left: 50%; width: 20px; height: 2px;
+            background: rgba(255,255,255,0.8); transform: translate(-50%, -50%);
+            pointer-events: none; z-index: 10;
         }
-        
-        #hud {
-            position: absolute; bottom: 20px; left: 20px;
-            color: white; text-shadow: 2px 2px 0 #000;
-            background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px;
+        #crosshair::after {
+            content: ''; position: absolute; top: 50%; left: 50%; width: 2px; height: 20px;
+            background: rgba(255,255,255,0.8); transform: translate(-50%, -50%);
         }
-
-        #block-name { font-weight: bold; color: yellow; }
+        #ui {
+            position: absolute; top: 10px; left: 10px; color: white;
+            background: rgba(0,0,0,0.5); padding: 10px; border-radius: 4px; pointer-events: none;
+        }
+        #coords { font-weight: bold; color: yellow; }
     </style>
 </head>
 <body>
     <div id="crosshair"></div>
-    
-    <div id="hud">
-        <div id="info">Selected: <span id="block-name">Grass</span></div>
-        <div>WASD = Move | Space = Jump</div>
-        <div>L-Click = Mine | R-Click = Place</div>
-        <div><b>Q = Throw Physics Block</b></div>
-        <div>Keys 1-5 = Change Block</div>
+    <div id="ui">
+        <div><b>Infinite World</b></div>
+        <div>WASD to Move | Space to Jump</div>
+        <div>Left Click: Destroy | Right Click: Build</div>
+        <div>Pos: <span id="coords">0, 0</span></div>
     </div>
 
     <script type="importmap">
@@ -47,169 +43,304 @@
         import * as THREE from 'three';
         import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
-        // --- CONFIGURATION ---
-        const WORLD_SIZE = 50; 
-        const GRAVITY = 25;
-        const JUMP_FORCE = 10;
-        
+        // --- CONSTANTS ---
+        const CHUNK_SIZE = 16;
+        const RENDER_DISTANCE = 4; // Radius of chunks to draw (Increase if you have a fast PC)
+        const WORLD_HEIGHT = 32;
+
         // --- SETUP ---
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x87CEEB);
-        scene.fog = new THREE.Fog(0x87CEEB, 20, 60);
+        scene.fog = new THREE.Fog(0x87CEEB, 30, 70); // Hides loading edge
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.shadowMap.enabled = true;
         document.body.appendChild(renderer.domElement);
 
         // Lights
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
-        scene.add(ambientLight);
-        const sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        sunLight.position.set(50, 80, 30);
-        sunLight.castShadow = true;
-        scene.add(sunLight);
+        const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambient);
+        const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+        sun.position.set(50, 80, 50);
+        scene.add(sun);
 
         // --- TEXTURES ---
-        function getTexture(color, type='solid') {
+        // We create a texture atlas (one image with 4 block types) to optimize performance
+        function createAtlas() {
             const canvas = document.createElement('canvas');
-            canvas.width = 64; canvas.height = 64;
+            canvas.width = 128; canvas.height = 32;
             const ctx = canvas.getContext('2d');
-            ctx.fillStyle = color;
-            ctx.fillRect(0,0,64,64);
             
-            // Noise
-            for(let i=0; i<400; i++) {
-                ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.15})`;
-                ctx.fillRect(Math.random()*64, Math.random()*64, 2, 2);
-            }
-            // Bricks pattern
-            if(type === 'brick') {
-                ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.moveTo(0, 32); ctx.lineTo(64, 32);
-                ctx.moveTo(32, 0); ctx.lineTo(32, 32);
-                ctx.stroke();
-            }
+            // Colors: Grass, Dirt, Stone, Wood
+            const colors = ['#4caf50', '#5d4037', '#757575', '#3e2723'];
+            colors.forEach((c, i) => {
+                ctx.fillStyle = c;
+                ctx.fillRect(i*32, 0, 32, 32);
+                // Add noise
+                ctx.fillStyle = 'rgba(0,0,0,0.1)';
+                for(let n=0; n<20; n++) ctx.fillRect(i*32 + Math.random()*32, Math.random()*32, 2, 2);
+                // Border
+                ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+                ctx.strokeRect(i*32, 0, 32, 32);
+            });
 
             const tex = new THREE.CanvasTexture(canvas);
             tex.magFilter = THREE.NearestFilter;
             return tex;
         }
+        const atlasTexture = createAtlas();
+        const blockMaterial = new THREE.MeshLambertMaterial({ map: atlasTexture });
 
-        const materials = {
-            grass: new THREE.MeshStandardMaterial({ map: getTexture('#4caf50') }),
-            dirt: new THREE.MeshStandardMaterial({ map: getTexture('#5d4037') }),
-            stone: new THREE.MeshStandardMaterial({ map: getTexture('#757575') }),
-            wood: new THREE.MeshStandardMaterial({ map: getTexture('#3e2723') }),
-            sand: new THREE.MeshStandardMaterial({ map: getTexture('#fdd835') }),
-        };
-
-        const materialKeys = ['grass', 'dirt', 'stone', 'wood', 'sand'];
-        let currentMatIndex = 0;
-
-        // --- WORLD GENERATION (Instanced) ---
-        const geometry = new THREE.BoxGeometry(1, 1, 1);
-        const dummy = new THREE.Object3D();
-        const MAX_BLOCKS = WORLD_SIZE * WORLD_SIZE * 8; 
-        
-        // We need a map to store the InstancedMeshes
-        const meshes = {};
-        for(let key in materials) {
-            meshes[key] = new THREE.InstancedMesh(geometry, materials[key], MAX_BLOCKS);
-            meshes[key].castShadow = true;
-            meshes[key].receiveShadow = true;
-            meshes[key].count = 0;
-            scene.add(meshes[key]);
+        // --- TERRAIN MATH (Pseudo Random) ---
+        // A simple hash function to make sure hills are same every time you visit
+        function noise(x, z) {
+            const sin = Math.sin(x / 15 + z / 25) * 5;
+            const cos = Math.cos(x / 20 - z / 10) * 5;
+            return Math.floor(sin + cos);
         }
 
-        // Logic Grid (Simple Map for collision)
-        // Format: "x,y,z" -> { type: 'grass' }
-        const worldMap = new Map();
+        // --- CHUNK SYSTEM ---
+        const chunks = new Map(); // Stores active chunks
 
-        function placeBlock(x, y, z, type) {
-            const key = `${x},${y},${z}`;
-            if(worldMap.has(key)) return; // Already exists
+        class Chunk {
+            constructor(cx, cz) {
+                this.cx = cx;
+                this.cz = cz;
+                this.data = new Map(); // Stores block modifications
+                this.mesh = null;
+                this.generate();
+            }
 
-            const mesh = meshes[type];
-            dummy.position.set(x, y, z);
-            dummy.updateMatrix();
-            mesh.setMatrixAt(mesh.count, dummy.matrix);
-            
-            // Store logical data
-            worldMap.set(key, { 
-                type: type, 
-                instanceId: mesh.count,
-                x: x, y: y, z: z
-            });
+            generate() {
+                // Geometry construction arrays
+                const vertices = [];
+                const uvs = [];
+                const indices = [];
+                let indexOffset = 0;
 
-            mesh.count++;
-            mesh.instanceMatrix.needsUpdate = true;
-        }
+                const startX = this.cx * CHUNK_SIZE;
+                const startZ = this.cz * CHUNK_SIZE;
 
-        function removeBlock(x, y, z) {
-            const key = `${x},${y},${z}`;
-            const block = worldMap.get(key);
-            if(!block) return;
+                // Loop through every block position in this chunk
+                for (let x = 0; x < CHUNK_SIZE; x++) {
+                    for (let z = 0; z < CHUNK_SIZE; z++) {
+                        const worldX = startX + x;
+                        const worldZ = startZ + z;
+                        
+                        // Height map
+                        const h = noise(worldX, worldZ);
+                        
+                        // Check if block is deleted
+                        // We iterate from bottom up to height
+                        for (let y = h - 5; y <= h; y++) {
+                            const key = `${worldX},${y},${worldZ}`;
+                            
+                            // Check mod list (if we deleted it before)
+                            if (this.data.has(key) && this.data.get(key) === 0) continue;
+                            
+                            // Determine Type (UV mapping)
+                            // 0:Grass, 1:Dirt, 2:Stone, 3:Wood
+                            let type = 1; // Dirt
+                            if (y === h) type = 0; // Grass
+                            if (y < h - 2) type = 2; // Stone
 
-            const mesh = meshes[block.type];
-            
-            // To "remove" in InstancedMesh, we swap with the last one or set scale to 0
-            // Setting scale to 0 is easier for this demo
-            const matrix = new THREE.Matrix4();
-            mesh.getMatrixAt(block.instanceId, matrix);
-            matrix.elements[0] = 0; // Scale X = 0
-            matrix.elements[5] = 0; // Scale Y = 0
-            matrix.elements[10] = 0; // Scale Z = 0
-            mesh.setMatrixAt(block.instanceId, matrix);
-            mesh.instanceMatrix.needsUpdate = true;
+                            // If mod list has a specific block type (placed block)
+                            if (this.data.has(key) && this.data.get(key) > 0) type = this.data.get(key) - 1;
 
-            worldMap.delete(key);
-        }
-
-        console.log("Generating Terrain...");
-        for (let x = -WORLD_SIZE/2; x < WORLD_SIZE/2; x++) {
-            for (let z = -WORLD_SIZE/2; z < WORLD_SIZE/2; z++) {
-                const h = Math.floor(Math.sin(x/12) * 4 + Math.cos(z/12) * 4);
+                            // Add Cube Geometry Faces
+                            // To be truly optimized, we should cull hidden faces, but for this simpler
+                            // implementation we draw all blocks as cubes.
+                            this.addBlockFace(worldX, y, worldZ, type, vertices, uvs, indices, indexOffset);
+                            indexOffset += 24; // 4 verts * 6 faces
+                        }
+                    }
+                }
                 
-                placeBlock(x, h, z, 'grass');
-                placeBlock(x, h-1, z, 'dirt');
-                placeBlock(x, h-2, z, 'stone');
+                this.buildMesh(vertices, uvs, indices);
+            }
 
-                // Trees
-                if(x % 10 === 0 && z % 10 === 0 && h > -2) {
-                    placeBlock(x, h+1, z, 'wood');
-                    placeBlock(x, h+2, z, 'wood');
-                    placeBlock(x, h+3, z, 'grass'); // Leaves (Green block)
+            addBlockFace(x, y, z, type, vertices, uvs, indices, offset) {
+                // Defines a unit cube at x,y,z
+                // Vertices (Simplified logic: Push 24 verts for 6 faces)
+                const s = 0.5; // size radius
+                
+                // Coordinates relative to center x,y,z
+                const v = [
+                    // Front
+                    {x:-s,y:-s,z:s}, {x:s,y:-s,z:s}, {x:s,y:s,z:s}, {x:-s,y:s,z:s},
+                    // Back
+                    {x:s,y:-s,z:-s}, {x:-s,y:-s,z:-s}, {x:-s,y:s,z:-s}, {x:s,y:s,z:-s},
+                    // Top
+                    {x:-s,y:s,z:s}, {x:s,y:s,z:s}, {x:s,y:s,z:-s}, {x:-s,y:s,z:-s},
+                    // Bottom
+                    {x:-s,y:-s,z:-s}, {x:s,y:-s,z:-s}, {x:s,y:-s,z:s}, {x:-s,y:-s,z:s},
+                    // Right
+                    {x:s,y:-s,z:s}, {x:s,y:-s,z:-s}, {x:s,y:s,z:-s}, {x:s,y:s,z:s},
+                    // Left
+                    {x:-s,y:-s,z:-s}, {x:-s,y:-s,z:s}, {x:-s,y:s,z:s}, {x:-s,y:s,z:-s}
+                ];
+
+                for(let i=0; i<24; i++) {
+                    vertices.push(v[i].x + x, v[i].y + y, v[i].z + z);
+                }
+
+                // Indices (6 faces, 2 triangles each)
+                const pattern = [0,1,2, 0,2,3];
+                for (let f = 0; f < 6; f++) {
+                    for (let p = 0; p < 6; p++) {
+                        indices.push(offset + f*4 + pattern[p]);
+                    }
+                }
+
+                // UVs (Texture Mapping)
+                // Atlas is 4 blocks wide (0.0 to 1.0). Each block is 0.25 wide.
+                const uStart = type * 0.25;
+                const uEnd = uStart + 0.25;
+                
+                for(let f=0; f<6; f++) {
+                    uvs.push(
+                        uStart, 0,
+                        uEnd, 0,
+                        uEnd, 1,
+                        uStart, 1
+                    );
+                }
+            }
+
+            buildMesh(vertices, uvs, indices) {
+                if(this.mesh) {
+                    this.mesh.geometry.dispose();
+                    scene.remove(this.mesh);
+                }
+                
+                if (vertices.length === 0) return;
+
+                const geo = new THREE.BufferGeometry();
+                geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+                geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+                geo.setIndex(indices);
+                geo.computeVertexNormals();
+
+                this.mesh = new THREE.Mesh(geo, blockMaterial);
+                scene.add(this.mesh);
+                
+                // Store reference for raycasting
+                this.mesh.chunkOwner = this;
+            }
+
+            // Called when user clicks
+            modify(x, y, z, action, type) {
+                const key = `${x},${y},${z}`;
+                if(action === 'destroy') {
+                    this.data.set(key, 0); // 0 = air
+                } else if (action === 'place') {
+                    this.data.set(key, type + 1); // Store type + 1 (1-4)
+                }
+                this.generate(); // Rebuild mesh immediately
+            }
+        }
+
+        // --- INFINITE WORLD LOGIC ---
+        let currentChunkX = 0;
+        let currentChunkZ = 0;
+
+        function updateChunks() {
+            const px = Math.floor(camera.position.x / CHUNK_SIZE);
+            const pz = Math.floor(camera.position.z / CHUNK_SIZE);
+
+            if (px === currentChunkX && pz === currentChunkZ) return; // Haven't moved chunks
+
+            currentChunkX = px;
+            currentChunkZ = pz;
+            document.getElementById('coords').innerText = `${px}, ${pz}`;
+
+            // Load new chunks
+            for (let x = -RENDER_DISTANCE; x <= RENDER_DISTANCE; x++) {
+                for (let z = -RENDER_DISTANCE; z <= RENDER_DISTANCE; z++) {
+                    const key = `${px + x},${pz + z}`;
+                    if (!chunks.has(key)) {
+                        chunks.set(key, new Chunk(px + x, pz + z));
+                    }
+                }
+            }
+
+            // Unload far chunks (Memory Management)
+            for (const [key, chunk] of chunks) {
+                const dist = Math.sqrt((chunk.cx - px)**2 + (chunk.cz - pz)**2);
+                if (dist > RENDER_DISTANCE + 1) {
+                    if (chunk.mesh) {
+                        chunk.mesh.geometry.dispose();
+                        scene.remove(chunk.mesh);
+                    }
+                    chunks.delete(key);
                 }
             }
         }
 
-        // --- PHYSICS OBJECTS (Thrown Blocks) ---
-        const physicsObjects = [];
-        
-        function spawnPhysicsBlock(pos, dir, type) {
-            const mesh = new THREE.Mesh(geometry, materials[type]);
-            mesh.position.copy(pos);
-            mesh.scale.set(0.5, 0.5, 0.5); // Slightly smaller
-            mesh.castShadow = true;
-            scene.add(mesh);
-
-            physicsObjects.push({
-                mesh: mesh,
-                velocity: dir.multiplyScalar(15), // Throw force
-                rotVel: new THREE.Vector3(Math.random(), Math.random(), Math.random()),
-                onGround: false,
-                isSand: type === 'sand'
-            });
-        }
-
-        // --- CONTROLS ---
+        // --- PLAYER & INTERACTION ---
         const controls = new PointerLockControls(camera, document.body);
-        document.addEventListener('click', () => controls.lock());
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        let canJump = false;
+        let selectedBlock = 0; // 0=Grass, 1=Dirt...
 
+        document.addEventListener('click', () => controls.lock());
+        
+        // Block Selection
+        document.addEventListener('keydown', (e) => {
+            if(e.key >= '1' && e.key <= '4') selectedBlock = parseInt(e.key) - 1;
+        });
+
+        // Mining / Placing
+        const raycaster = new THREE.Raycaster();
+        const center = new THREE.Vector2(0,0);
+
+        document.addEventListener('mousedown', (e) => {
+            if(!controls.isLocked) return;
+
+            raycaster.setFromCamera(center, camera);
+            
+            // Get all chunk meshes
+            const meshes = [];
+            for(const chunk of chunks.values()) {
+                if(chunk.mesh) meshes.push(chunk.mesh);
+            }
+
+            const hits = raycaster.intersectObjects(meshes);
+            if(hits.length > 0 && hits[0].distance < 6) {
+                const hit = hits[0];
+                const chunk = hit.object.chunkOwner;
+
+                // Calculate Block Coordinates
+                // We add/subtract small epsilon to get inside/outside block
+                if(e.button === 0) { // Left Click (Destroy)
+                    const x = Math.floor(hit.point.x - hit.face.normal.x * 0.1);
+                    const y = Math.floor(hit.point.y - hit.face.normal.y * 0.1);
+                    const z = Math.floor(hit.point.z - hit.face.normal.z * 0.1);
+                    // Find which chunk owns this block (might be neighbor)
+                    const cx = Math.floor(x / CHUNK_SIZE);
+                    const cz = Math.floor(z / CHUNK_SIZE);
+                    const key = `${cx},${cz}`;
+                    if(chunks.has(key)) chunks.get(key).modify(x, y, z, 'destroy');
+
+                } else if (e.button === 2) { // Right Click (Place)
+                    const x = Math.floor(hit.point.x + hit.face.normal.x * 0.1);
+                    const y = Math.floor(hit.point.y + hit.face.normal.y * 0.1);
+                    const z = Math.floor(hit.point.z + hit.face.normal.z * 0.1);
+                    
+                    // Prevent placing in self
+                    if (Math.abs(x - camera.position.x) < 0.8 && Math.abs(z - camera.position.z) < 0.8 && Math.abs(y - camera.position.y + 1) < 1.8) return;
+
+                    const cx = Math.floor(x / CHUNK_SIZE);
+                    const cz = Math.floor(z / CHUNK_SIZE);
+                    const key = `${cx},${cz}`;
+                    if(chunks.has(key)) chunks.get(key).modify(x, y, z, 'place', selectedBlock);
+                }
+            }
+        });
+
+        // --- MOVEMENT LOOP ---
         const keys = { w:false, a:false, s:false, d:false, sp:false };
         document.addEventListener('keydown', (e) => {
             switch(e.code) {
@@ -218,24 +349,8 @@
                 case 'KeyS': keys.s=true; break;
                 case 'KeyD': keys.d=true; break;
                 case 'Space': keys.sp=true; break;
-                case 'KeyQ': 
-                    // THROW BLOCK
-                    if(controls.isLocked) {
-                        const dir = new THREE.Vector3();
-                        camera.getWorldDirection(dir);
-                        spawnPhysicsBlock(camera.position, dir, materialKeys[currentMatIndex]);
-                    }
-                    break;
-            }
-            // Block Selection
-            if(e.key >= '1' && e.key <= '5') {
-                currentMatIndex = parseInt(e.key) - 1;
-                const name = materialKeys[currentMatIndex];
-                document.getElementById('block-name').innerText = name.charAt(0).toUpperCase() + name.slice(1);
-                document.getElementById('block-name').style.color = name === 'sand' ? 'orange' : 'yellow';
             }
         });
-
         document.addEventListener('keyup', (e) => {
             switch(e.code) {
                 case 'KeyW': keys.w=false; break;
@@ -246,61 +361,6 @@
             }
         });
 
-        // --- INTERACTION ---
-        const raycaster = new THREE.Raycaster();
-        const center = new THREE.Vector2(0,0);
-
-        document.addEventListener('mousedown', (e) => {
-            if(!controls.isLocked) return;
-
-            raycaster.setFromCamera(center, camera);
-            // Get all InstancedMeshes
-            const targets = Object.values(meshes);
-            const intersections = raycaster.intersectObjects(targets);
-            
-            if(intersections.length > 0 && intersections[0].distance < 6) {
-                const hit = intersections[0];
-                const x = Math.round(hit.point.x - hit.face.normal.x * 0.1);
-                const y = Math.round(hit.point.y - hit.face.normal.y * 0.1);
-                const z = Math.round(hit.point.z - hit.face.normal.z * 0.1);
-
-                if(e.button === 0) {
-                    // Mine
-                    removeBlock(x, y, z);
-                    // Spawn particle debris (Physics object)
-                    const dir = new THREE.Vector3(Math.random()-0.5, 1, Math.random()-0.5).normalize();
-                    spawnPhysicsBlock(new THREE.Vector3(x,y,z), dir, 'dirt');
-
-                } else if (e.button === 2) {
-                    // Place
-                    const nx = Math.round(hit.point.x + hit.face.normal.x * 0.1);
-                    const ny = Math.round(hit.point.y + hit.face.normal.y * 0.1);
-                    const nz = Math.round(hit.point.z + hit.face.normal.z * 0.1);
-                    
-                    // Don't place inside player
-                    if(new THREE.Vector3(nx,ny,nz).distanceTo(camera.position) > 1.5) {
-                        const type = materialKeys[currentMatIndex];
-                        
-                        if(type === 'sand') {
-                            // Sand Physics: If placed in air, it becomes a physics object immediately
-                            const belowKey = `${nx},${ny-1},${nz}`;
-                            if(!worldMap.has(belowKey)) {
-                                spawnPhysicsBlock(new THREE.Vector3(nx,ny,nz), new THREE.Vector3(0,0,0), 'sand');
-                            } else {
-                                placeBlock(nx, ny, nz, type);
-                            }
-                        } else {
-                            placeBlock(nx, ny, nz, type);
-                        }
-                    }
-                }
-            }
-        });
-
-        // --- MAIN LOOP ---
-        const velocity = new THREE.Vector3();
-        const direction = new THREE.Vector3();
-        let canJump = false;
         const clock = new THREE.Clock();
 
         function animate() {
@@ -308,95 +368,45 @@
             const delta = Math.min(clock.getDelta(), 0.1);
 
             if(controls.isLocked) {
-                // 1. Player Physics
                 velocity.x -= velocity.x * 10.0 * delta;
                 velocity.z -= velocity.z * 10.0 * delta;
-                velocity.y -= GRAVITY * delta;
+                velocity.y -= 30.0 * delta; // Gravity
 
                 direction.z = Number(keys.w) - Number(keys.s);
                 direction.x = Number(keys.d) - Number(keys.a);
                 direction.normalize();
 
-                if (keys.w || keys.s) velocity.z -= direction.z * 40.0 * delta;
-                if (keys.a || keys.d) velocity.x -= direction.x * 40.0 * delta;
+                if (keys.w || keys.s) velocity.z -= direction.z * 50.0 * delta;
+                if (keys.a || keys.d) velocity.x -= direction.x * 50.0 * delta;
 
                 controls.moveRight(-velocity.x * delta);
                 controls.moveForward(-velocity.z * delta);
                 camera.position.y += velocity.y * delta;
 
-                // Simple Ground Collision
-                if(camera.position.y < -20) {
-                    camera.position.set(0, 20, 0);
-                    velocity.y = 0;
-                }
-
-                const px = Math.round(camera.position.x);
-                const py = Math.round(camera.position.y - 1.6); // Feet
-                const pz = Math.round(camera.position.z);
-
-                // Check block at feet
-                if(worldMap.has(`${px},${py},${pz}`)) {
+                // --- COLLISIONS (Simplified for Infinite World) ---
+                // We Raycast down to find floor height
+                const downRay = new THREE.Raycaster(camera.position, new THREE.Vector3(0,-1,0), 0, 2);
+                const meshes = [];
+                for(const chunk of chunks.values()) if(chunk.mesh) meshes.push(chunk.mesh);
+                
+                const hits = downRay.intersectObjects(meshes);
+                
+                if(hits.length > 0 && hits[0].distance < 1.6) {
                     velocity.y = Math.max(0, velocity.y);
-                    camera.position.y = py + 1.6 + 0.5; // Snap up
+                    camera.position.y = hits[0].point.y + 1.6;
                     canJump = true;
                 }
 
-                if (keys.sp && canJump) { velocity.y = JUMP_FORCE; canJump = false; }
+                if (keys.sp && canJump) { velocity.y = 12; canJump = false; }
+                
+                // Infinite world generation update
+                updateChunks();
             }
 
-            // 2. Object Physics Loop (Bounce & Gravity)
-            for(let i=physicsObjects.length-1; i>=0; i--) {
-                const obj = physicsObjects[i];
-                
-                // Gravity
-                obj.velocity.y -= GRAVITY * delta;
-                
-                // Move
-                const oldPos = obj.mesh.position.clone();
-                obj.mesh.position.add(obj.velocity.clone().multiplyScalar(delta));
-                
-                // Rotate
-                if(!obj.onGround) {
-                    obj.mesh.rotation.x += obj.rotVel.x * 5 * delta;
-                    obj.mesh.rotation.y += obj.rotVel.y * 5 * delta;
-                }
-
-                // Collision with World Grid
-                const checkX = Math.round(obj.mesh.position.x);
-                const checkY = Math.round(obj.mesh.position.y - 0.25); // Bottom of cube
-                const checkZ = Math.round(obj.mesh.position.z);
-                
-                if(worldMap.has(`${checkX},${checkY},${checkZ}`)) {
-                    // Hit ground
-                    obj.mesh.position.y = checkY + 1; // Snap to top of block
-                    
-                    if(obj.velocity.y < -2) {
-                        // Bounce
-                        obj.velocity.y = -obj.velocity.y * 0.5; 
-                        obj.velocity.x *= 0.6; // Friction
-                        obj.velocity.z *= 0.6;
-                    } else {
-                        // Stop
-                        obj.velocity.set(0,0,0);
-                        obj.onGround = true;
-                        
-                        // If it's sand and stopped, turn it into a real block!
-                        if(obj.isSand) {
-                            placeBlock(checkX, checkY+1, checkZ, 'sand');
-                            scene.remove(obj.mesh);
-                            physicsObjects.splice(i, 1);
-                            continue;
-                        }
-                    }
-                } else {
-                    obj.onGround = false;
-                }
-
-                // Cleanup falling off world
-                if(obj.mesh.position.y < -30) {
-                    scene.remove(obj.mesh);
-                    physicsObjects.splice(i, 1);
-                }
+            // Fall recovery
+            if(camera.position.y < -30) {
+                camera.position.y = 30;
+                velocity.y = 0;
             }
 
             renderer.render(scene, camera);
@@ -404,6 +414,7 @@
 
         // Init
         camera.position.set(0, 10, 0);
+        updateChunks(); // Initial load
         animate();
 
         window.addEventListener('resize', () => {
@@ -411,7 +422,6 @@
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
-
     </script>
 </body>
 </html>
