@@ -2,9 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Infinite Nature Craft</title>
+    <title>Minecraft: Water & Mining Update</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #87CEEB; font-family: monospace; }
+        body { margin: 0; overflow: hidden; background: #87CEEB; font-family: monospace; user-select: none; }
+        
         #crosshair {
             position: absolute; top: 50%; left: 50%; width: 20px; height: 2px;
             background: rgba(255,255,255,0.8); transform: translate(-50%, -50%);
@@ -14,19 +15,28 @@
             content: ''; position: absolute; top: 50%; left: 50%; width: 2px; height: 20px;
             background: rgba(255,255,255,0.8); transform: translate(-50%, -50%);
         }
+        
         #ui {
             position: absolute; top: 10px; left: 10px; color: white;
             background: rgba(0,0,0,0.5); padding: 10px; border-radius: 4px; pointer-events: none;
         }
         #coords { font-weight: bold; color: yellow; }
         #slot { font-weight: bold; color: cyan; }
+        
+        /* Underwater Overlay */
+        #water-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 50, 200, 0.4);
+            pointer-events: none; display: none; z-index: 5;
+        }
     </style>
 </head>
 <body>
     <div id="crosshair"></div>
+    <div id="water-overlay"></div>
     <div id="ui">
-        <div><b>Infinite Nature</b></div>
-        <div>WASD = Move | Space = Jump</div>
+        <div><b>Infinite World + Water Physics</b></div>
+        <div>WASD = Move | Space = Jump/Swim</div>
         <div>Left Click = Mine | Right Click = Place</div>
         <div>Keys 1-7 = Select Block</div>
         <div>Selected: <span id="slot">Grass</span></div>
@@ -48,247 +58,229 @@
 
         // --- CONSTANTS ---
         const CHUNK_SIZE = 16;
-        const RENDER_DISTANCE = 4; 
+        const RENDER_DISTANCE = 3; 
         const WATER_LEVEL = -3;
-        const SEED = 123.45; // Seed for randomness
 
         // --- SETUP ---
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB);
-        scene.fog = new THREE.Fog(0x87CEEB, 30, 80);
+        const skyColor = new THREE.Color(0x87CEEB);
+        const waterColor = new THREE.Color(0x001e36);
+        scene.background = skyColor;
+        scene.fog = new THREE.Fog(skyColor, 20, 60);
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        const renderer = new THREE.WebGLRenderer({ antialias: false }); // False for retro feel & performance
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
-        const ambient = new THREE.AmbientLight(0xffffff, 0.7);
+        const ambient = new THREE.AmbientLight(0xffffff, 0.8);
         scene.add(ambient);
-        const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+        const sun = new THREE.DirectionalLight(0xffffff, 0.5);
         sun.position.set(50, 100, 50);
         scene.add(sun);
 
-        // --- TEXTURES (Atlas) ---
+        // --- PLAYER HAND (VISUAL) ---
+        const handGroup = new THREE.Group();
+        camera.add(handGroup);
+        // Right hand
+        const handGeo = new THREE.BoxGeometry(0.4, 0.4, 1.2);
+        const handMat = new THREE.MeshLambertMaterial({ color: 0xeebb99 }); // Skin tone
+        const handMesh = new THREE.Mesh(handGeo, handMat);
+        handMesh.position.set(0.5, -0.5, -1);
+        handMesh.rotation.x = -0.2;
+        handMesh.rotation.y = -0.1;
+        handGroup.add(handMesh);
+        scene.add(camera);
+
+        // --- TEXTURES ---
         // 0:Grass, 1:Dirt, 2:Stone, 3:Wood, 4:Leaves, 5:Water, 6:Lava
         const BLOCK_NAMES = ["Grass", "Dirt", "Stone", "Wood", "Leaves", "Water", "Lava"];
         
         function createAtlas() {
             const canvas = document.createElement('canvas');
-            const totalBlocks = 7;
-            canvas.width = 32 * totalBlocks; canvas.height = 32;
+            canvas.width = 32 * 7; canvas.height = 32;
             const ctx = canvas.getContext('2d');
-            
             const colors = ['#4caf50', '#5d4037', '#757575', '#3e2723', '#2e7d32', '#29b6f6', '#ff5722'];
             
             colors.forEach((c, i) => {
                 ctx.fillStyle = c;
                 ctx.fillRect(i*32, 0, 32, 32);
+                ctx.fillStyle = 'rgba(0,0,0,0.15)'; // Noise
+                for(let n=0; n<20; n++) ctx.fillRect(i*32+Math.random()*32, Math.random()*32, 2, 2);
                 
-                // Add texture noise
-                ctx.fillStyle = 'rgba(0,0,0,0.1)';
-                for(let n=0; n<15; n++) ctx.fillRect(i*32 + Math.random()*32, Math.random()*32, 2, 2);
-                
-                // Specific textures
-                if(i===4) { // Leaves (transparent holes)
-                    ctx.fillStyle = 'rgba(0,0,0,0.3)';
-                    ctx.fillRect(i*32+5, 5, 5, 5); ctx.fillRect(i*32+20, 20, 5, 5);
+                if(i===3) { // Wood rings
+                     ctx.fillStyle = 'rgba(0,0,0,0.2)';
+                     ctx.fillRect(i*32+10, 0, 4, 32); ctx.fillRect(i*32+20, 0, 4, 32);
                 }
-                if(i===6) { // Lava glow
-                    ctx.fillStyle = 'rgba(255,255,0,0.5)';
-                    ctx.fillRect(i*32+10, 10, 10, 5);
+                if(i===4) { // Leaves details
+                    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                    ctx.fillRect(i*32+5, 5, 4, 4); ctx.fillRect(i*32+20, 20, 6, 6);
                 }
             });
-
             const tex = new THREE.CanvasTexture(canvas);
             tex.magFilter = THREE.NearestFilter;
             tex.colorSpace = THREE.SRGBColorSpace;
             return tex;
         }
         
-        const blockMaterial = new THREE.MeshLambertMaterial({ 
-            map: createAtlas(), 
-            transparent: true, 
-            opacity: 1.0,
-            alphaTest: 0.1 // Keeps sharp edges for leaves
-        });
+        const atlas = createAtlas();
+        const matSolid = new THREE.MeshLambertMaterial({ map: atlas, transparent: true, alphaTest: 0.1 });
+        const matWater = new THREE.MeshLambertMaterial({ map: atlas, transparent: true, opacity: 0.7, side: THREE.DoubleSide });
 
-        // --- MATH / NOISE ---
-        function pseudoRandom(x, z) {
-            const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
-            return s - Math.floor(s);
-        }
+        // --- CHUNK SYSTEM (DUAL MESH) ---
+        // We separate Solid blocks and Water blocks so we can walk through water
+        const chunks = new Map();
 
         function noise(x, z) {
-            // Smooth terrain math
             const sin = Math.sin(x / 15 + z / 25) * 6;
             const cos = Math.cos(x / 20 - z / 10) * 6;
             return Math.floor(sin + cos);
         }
 
-        // --- CHUNK SYSTEM ---
-        const chunks = new Map();
-
         class Chunk {
             constructor(cx, cz) {
                 this.cx = cx;
                 this.cz = cz;
-                this.data = new Map(); // Modifications
-                this.mesh = null;
+                this.data = new Map(); 
+                this.meshSolid = null;
+                this.meshWater = null;
                 this.generate();
             }
 
             generate() {
-                const vertices = [];
-                const uvs = [];
-                const indices = [];
-                let indexOffset = 0;
+                const solidVerts = [], solidUVs = [], solidIndices = [];
+                const waterVerts = [], waterUVs = [], waterIndices = [];
+                let sCount = 0, wCount = 0;
 
                 const startX = this.cx * CHUNK_SIZE;
                 const startZ = this.cz * CHUNK_SIZE;
-                
-                // Store terrain height to help tree placement
-                const heights = []; 
+                const heights = new Int8Array(CHUNK_SIZE * CHUNK_SIZE);
 
-                // 1. GENERATE TERRAIN & WATER
+                // Terrain & Water Pass
                 for (let x = 0; x < CHUNK_SIZE; x++) {
                     for (let z = 0; z < CHUNK_SIZE; z++) {
-                        const worldX = startX + x;
-                        const worldZ = startZ + z;
-                        
-                        let h = noise(worldX, worldZ);
+                        const wx = startX + x, wz = startZ + z;
+                        const h = noise(wx, wz);
                         heights[x + z * CHUNK_SIZE] = h;
 
-                        // Bedrock to Height
-                        for (let y = h - 6; y <= h; y++) {
-                            // Check modification
-                            const key = `${worldX},${y},${worldZ}`;
-                            if (this.data.has(key) && this.data.get(key) === 0) continue;
-
+                        // Solid Blocks
+                        for (let y = h - 5; y <= h; y++) {
+                            if (this.checkVoid(wx, y, wz)) continue;
+                            
                             let type = 1; // Dirt
                             if (y === h) type = 0; // Grass
                             if (y < h - 3) type = 2; // Stone
-                            
-                            // Deep Lava
-                            if (y < -8) type = 6; 
+                            if (y === h && y <= WATER_LEVEL + 1 && y >= WATER_LEVEL -1) type = 1; // Beach
+                            if (y < -8) type = 6; // Lava deep down
+                            if (this.checkCustom(wx, y, wz) > 0) type = this.data.get(`${wx},${y},${wx}`) - 1;
 
-                            // Sand beaches
-                            if (y === h && y <= WATER_LEVEL + 1 && y >= WATER_LEVEL -1) type = 1; // Dirt/Sand
-
-                            // Custom block override
-                            if (this.data.has(key) && this.data.get(key) > 0) type = this.data.get(key) - 1;
-
-                            this.addFace(worldX, y, worldZ, type, vertices, uvs, indices, indexOffset);
-                            indexOffset += 24;
+                            // If block is Lava(6), treat as solid mesh but visual is lava
+                            this.addFace(wx, y, wz, type, solidVerts, solidUVs, solidIndices, sCount);
+                            sCount += 24;
                         }
 
-                        // Water
+                        // Water Blocks
                         for (let y = h + 1; y <= WATER_LEVEL; y++) {
-                             const key = `${worldX},${y},${worldZ}`;
-                             if (this.data.has(key) && this.data.get(key) === 0) continue;
-                             
-                             // 5 = Water
-                             this.addFace(worldX, y, worldZ, 5, vertices, uvs, indices, indexOffset);
-                             indexOffset += 24;
+                             if (this.checkVoid(wx, y, wz)) continue;
+                             this.addFace(wx, y, wz, 5, waterVerts, waterUVs, waterIndices, wCount);
+                             wCount += 24;
                         }
                     }
                 }
 
-                // 2. GENERATE TREES
-                // We do a second pass. Note: Trees on chunk borders might get cut off in this simple version
+                // Trees Pass (Simple)
                 for (let x = 2; x < CHUNK_SIZE - 2; x++) {
                     for (let z = 2; z < CHUNK_SIZE - 2; z++) {
-                        const worldX = startX + x;
-                        const worldZ = startZ + z;
+                        const wx = startX + x, wz = startZ + z;
                         const h = heights[x + z * CHUNK_SIZE];
-
-                        // Only grow on land above water
-                        if (h > WATER_LEVEL) {
-                            // Random chance (pseudo random based on coord so it stays same)
-                            const r = pseudoRandom(worldX, worldZ);
-                            if (r > 0.97) { // 3% chance
-                                this.buildTree(worldX, h + 1, worldZ, vertices, uvs, indices, indexOffset);
-                                // The buildTree function increases indexOffset, but we need to track it manually
-                                // Since JS passes primitives by value, we have to calculate how many blocks we added
-                                const blocksAdded = 5 + 4; // 5 leaves + 4 trunk roughly
-                                indexOffset += blocksAdded * 24; // Approximation, actual logic inside buildTree needs care
-                            }
+                        if (h > WATER_LEVEL && (Math.sin(wx*23.1 + wz*12.4)*0.5+0.5) > 0.98) {
+                             // Trunk
+                             for(let i=1; i<=4; i++) {
+                                 if(!this.checkVoid(wx, h+i, wz)) {
+                                    this.addFace(wx, h+i, wz, 3, solidVerts, solidUVs, solidIndices, sCount);
+                                    sCount += 24;
+                                 }
+                             }
+                             // Leaves
+                             for(let lx=wx-1; lx<=wx+1; lx++) {
+                                 for(let lz=wz-1; lz<=wz+1; lz++) {
+                                     if(lx===wx && lz===wz && lx!==wx) continue; // skip center
+                                     if(!this.checkVoid(lx, h+4, lz)) {
+                                        this.addFace(lx, h+4, lz, 4, solidVerts, solidUVs, solidIndices, sCount);
+                                        sCount += 24;
+                                     }
+                                 }
+                             }
                         }
                     }
                 }
                 
-                this.buildMesh(vertices, uvs, indices);
+                this.dispose();
+                if(solidVerts.length > 0) this.meshSolid = this.createMesh(solidVerts, solidUVs, solidIndices, matSolid);
+                if(waterVerts.length > 0) this.meshWater = this.createMesh(waterVerts, waterUVs, waterIndices, matWater);
             }
 
-            buildTree(x, y, z, vertices, uvs, indices, offset) {
-                // Trunk (3 blocks high)
-                for(let i=0; i<4; i++) {
-                     const key = `${x},${y+i},${z}`;
-                     if(this.data.has(key) && this.data.get(key)===0) continue; // broken
-                     this.addFace(x, y+i, z, 3, vertices, uvs, indices, offset);
-                     offset += 24;
-                }
-                // Leaves (Cluster)
-                const leafY = y + 3;
-                for(let lx = x-1; lx <= x+1; lx++) {
-                    for(let lz = z-1; lz <= z+1; lz++) {
-                        // Skip corners for rounder look
-                        if(Math.abs(lx-x) === 1 && Math.abs(lz-z) === 1) continue;
-                        
-                        const key = `${lx},${leafY},${lz}`;
-                        if(this.data.has(key) && this.data.get(key)===0) continue;
-                        
-                        this.addFace(lx, leafY, lz, 4, vertices, uvs, indices, offset);
-                        offset += 24;
-                    }
-                }
-                // Top Leaf
-                this.addFace(x, leafY+1, z, 4, vertices, uvs, indices, offset);
-            }
+            checkVoid(x, y, z) { return this.data.has(`${x},${y},${z}`) && this.data.get(`${x},${y},${z}`) === 0; }
+            checkCustom(x, y, z) { return this.data.has(`${x},${y},${z}`) ? this.data.get(`${x},${y},${z}`) : -1; }
 
-            addFace(x, y, z, type, vertices, uvs, indices, offset) {
+            addFace(x, y, z, type, verts, uvs, inds, off) {
                 const s = 0.5;
                 const v = [
-                    {x:-s,y:-s,z:s}, {x:s,y:-s,z:s}, {x:s,y:s,z:s}, {x:-s,y:s,z:s}, // Front
-                    {x:s,y:-s,z:-s}, {x:-s,y:-s,z:-s}, {x:-s,y:s,z:-s}, {x:s,y:s,z:-s}, // Back
-                    {x:-s,y:s,z:s}, {x:s,y:s,z:s}, {x:s,y:s,z:-s}, {x:-s,y:s,z:-s}, // Top
-                    {x:-s,y:-s,z:-s}, {x:s,y:-s,z:-s}, {x:s,y:-s,z:s}, {x:-s,y:-s,z:s}, // Bottom
-                    {x:s,y:-s,z:s}, {x:s,y:-s,z:-s}, {x:s,y:s,z:-s}, {x:s,y:s,z:s}, // Right
-                    {x:-s,y:-s,z:-s}, {x:-s,y:-s,z:s}, {x:-s,y:s,z:s}, {x:-s,y:s,z:-s} // Left
+                    {x:-s,y:-s,z:s}, {x:s,y:-s,z:s}, {x:s,y:s,z:s}, {x:-s,y:s,z:s}, // F
+                    {x:s,y:-s,z:-s}, {x:-s,y:-s,z:-s}, {x:-s,y:s,z:-s}, {x:s,y:s,z:-s}, // B
+                    {x:-s,y:s,z:s}, {x:s,y:s,z:s}, {x:s,y:s,z:-s}, {x:-s,y:s,z:-s}, // T
+                    {x:-s,y:-s,z:-s}, {x:s,y:-s,z:-s}, {x:s,y:-s,z:s}, {x:-s,y:-s,z:s}, // Bot
+                    {x:s,y:-s,z:s}, {x:s,y:-s,z:-s}, {x:s,y:s,z:-s}, {x:s,y:s,z:s}, // R
+                    {x:-s,y:-s,z:-s}, {x:-s,y:-s,z:s}, {x:-s,y:s,z:s}, {x:-s,y:s,z:-s}  // L
                 ];
-                for(let i=0; i<24; i++) vertices.push(v[i].x + x, v[i].y + y, v[i].z + z);
+                for(let i=0; i<24; i++) verts.push(v[i].x+x, v[i].y+y, v[i].z+z);
+                const pat = [0,1,2, 0,2,3];
+                for(let f=0; f<6; f++) for(let p=0; p<6; p++) inds.push(off + f*4 + pat[p]);
                 
-                const pattern = [0,1,2, 0,2,3];
-                for (let f = 0; f < 6; f++) {
-                    for (let p = 0; p < 6; p++) indices.push(offset + f*4 + pattern[p]);
-                }
-
-                // Atlas UV mapping (7 blocks)
-                const step = 1 / 7;
-                const uStart = type * step;
-                const uEnd = uStart + step;
-                for(let f=0; f<6; f++) uvs.push(uStart,0, uEnd,0, uEnd,1, uStart,1);
+                const step = 1/7; const u = type*step;
+                for(let f=0; f<6; f++) uvs.push(u,0, u+step,0, u+step,1, u,1);
             }
 
-            buildMesh(vertices, uvs, indices) {
-                if(this.mesh) { this.mesh.geometry.dispose(); scene.remove(this.mesh); }
-                if (vertices.length === 0) return;
-                
+            createMesh(v, u, i, mat) {
                 const geo = new THREE.BufferGeometry();
-                geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-                geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-                geo.setIndex(indices);
+                geo.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+                geo.setAttribute('uv', new THREE.Float32BufferAttribute(u, 2));
+                geo.setIndex(i);
                 geo.computeVertexNormals();
+                const m = new THREE.Mesh(geo, mat);
+                m.chunk = this;
+                scene.add(m);
+                return m;
+            }
 
-                this.mesh = new THREE.Mesh(geo, blockMaterial);
-                this.mesh.chunkOwner = this;
-                scene.add(this.mesh);
+            dispose() {
+                if(this.meshSolid) { this.meshSolid.geometry.dispose(); scene.remove(this.meshSolid); }
+                if(this.meshWater) { this.meshWater.geometry.dispose(); scene.remove(this.meshWater); }
             }
 
             modify(x, y, z, action, type) {
                 const key = `${x},${y},${z}`;
-                if(action === 'destroy') this.data.set(key, 0);
-                if(action === 'place') this.data.set(key, type + 1);
+                if(action==='destroy') {
+                    this.data.set(key, 0);
+                    spawnParticles(x, y, z); // Mining effect
+                }
+                if(action==='place') this.data.set(key, type + 1);
                 this.generate();
+            }
+        }
+
+        // --- PARTICLE SYSTEM (MINING DEBRIS) ---
+        const particles = [];
+        const partGeo = new THREE.BoxGeometry(0.15, 0.15, 0.15);
+        const partMat = new THREE.MeshBasicMaterial({ color: 0x555555 }); // Grey debris
+        
+        function spawnParticles(x, y, z) {
+            for(let i=0; i<8; i++) {
+                const mesh = new THREE.Mesh(partGeo, partMat);
+                mesh.position.set(x + (Math.random()-0.5), y + (Math.random()-0.5), z + (Math.random()-0.5));
+                mesh.vel = new THREE.Vector3((Math.random()-0.5)*5, Math.random()*5, (Math.random()-0.5)*5);
+                scene.add(mesh);
+                particles.push(mesh);
             }
         }
 
@@ -297,70 +289,69 @@
         function updateChunks() {
             const px = Math.floor(camera.position.x / CHUNK_SIZE);
             const pz = Math.floor(camera.position.z / CHUNK_SIZE);
-            if (px === currentCX && pz === currentCZ) return;
+            if(px === currentCX && pz === currentCZ) return;
             currentCX = px; currentCZ = pz;
-            document.getElementById('coords').innerText = `${px}, ${pz}`;
+            document.getElementById('coords').innerText = `${Math.floor(camera.position.x)}, ${Math.floor(camera.position.y)}, ${Math.floor(camera.position.z)}`;
 
-            for (let x = -RENDER_DISTANCE; x <= RENDER_DISTANCE; x++) {
-                for (let z = -RENDER_DISTANCE; z <= RENDER_DISTANCE; z++) {
-                    const key = `${px + x},${pz + z}`;
-                    if (!chunks.has(key)) chunks.set(key, new Chunk(px + x, pz + z));
+            for(let x = -RENDER_DISTANCE; x <= RENDER_DISTANCE; x++) {
+                for(let z = -RENDER_DISTANCE; z <= RENDER_DISTANCE; z++) {
+                    const k = `${px+x},${pz+z}`;
+                    if(!chunks.has(k)) chunks.set(k, new Chunk(px+x, pz+z));
                 }
             }
-            // Garbage collection
-            for (const [key, chunk] of chunks) {
-                if (Math.abs(chunk.cx - px) > RENDER_DISTANCE + 1 || Math.abs(chunk.cz - pz) > RENDER_DISTANCE + 1) {
-                    if (chunk.mesh) { scene.remove(chunk.mesh); chunk.mesh.geometry.dispose(); }
-                    chunks.delete(key);
+            for(const [k, c] of chunks) {
+                if(Math.abs(c.cx - px) > RENDER_DISTANCE+1 || Math.abs(c.cz - pz) > RENDER_DISTANCE+1) {
+                    c.dispose(); chunks.delete(k);
                 }
             }
         }
 
-        // --- GAMEPLAY ---
+        // --- INTERACTION ---
         const controls = new PointerLockControls(camera, document.body);
         const raycaster = new THREE.Raycaster();
         let selectedBlock = 0;
+        let isMining = false;
+
+        // Selection Box
+        const selBox = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1.01,1.01,1.01)), new THREE.LineBasicMaterial({color:0x000000}));
+        scene.add(selBox); selBox.visible = false;
 
         document.addEventListener('click', () => controls.lock());
-        document.addEventListener('keydown', (e) => {
+        document.addEventListener('keydown', e => {
             if(e.key >= '1' && e.key <= '7') {
-                selectedBlock = parseInt(e.key) - 1;
+                selectedBlock = parseInt(e.key)-1;
                 document.getElementById('slot').innerText = BLOCK_NAMES[selectedBlock];
             }
         });
 
-        document.addEventListener('mousedown', (e) => {
+        document.addEventListener('mousedown', e => {
             if(!controls.isLocked) return;
+            // Hand Animation
+            handMesh.position.z = -1.5; // Punch forward
+            setTimeout(() => handMesh.position.z = -1, 150); // Return
+
             raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
-            const meshes = Array.from(chunks.values()).map(c => c.mesh).filter(m => m);
+            const meshes = Array.from(chunks.values()).map(c => c.meshSolid).filter(m => m);
             const hits = raycaster.intersectObjects(meshes);
 
-            if(hits.length > 0 && hits[0].distance < 6) {
+            if(hits.length > 0 && hits[0].distance < 5) {
                 const hit = hits[0];
                 const nx = hit.face.normal.x, ny = hit.face.normal.y, nz = hit.face.normal.z;
-                
-                // Coordinates
-                const x = Math.floor(hit.point.x - nx * 0.1);
-                const y = Math.floor(hit.point.y - ny * 0.1);
-                const z = Math.floor(hit.point.z - nz * 0.1);
-                
-                const cx = Math.floor(x / CHUNK_SIZE);
-                const cz = Math.floor(z / CHUNK_SIZE);
-                const key = `${cx},${cz}`;
+                const x = Math.floor(hit.point.x - nx*0.1);
+                const y = Math.floor(hit.point.y - ny*0.1);
+                const z = Math.floor(hit.point.z - nz*0.1);
+                const key = `${Math.floor(x/CHUNK_SIZE)},${Math.floor(z/CHUNK_SIZE)}`;
 
-                if(e.button === 0 && chunks.has(key)) { // Destroy
-                    chunks.get(key).modify(x, y, z, 'destroy');
-                } else if (e.button === 2) { // Place
-                    const px = Math.floor(hit.point.x + nx * 0.1);
-                    const py = Math.floor(hit.point.y + ny * 0.1);
-                    const pz = Math.floor(hit.point.z + nz * 0.1);
-                    // Collision check
-                    if(Math.abs(px-camera.position.x)<0.8 && Math.abs(py-camera.position.y+1)<1.8 && Math.abs(pz-camera.position.z)<0.8) return;
-                    
-                    const pcx = Math.floor(px / CHUNK_SIZE);
-                    const pcz = Math.floor(pz / CHUNK_SIZE);
-                    const pkey = `${pcx},${pcz}`;
-                    if(chunks.has(pkey)) chunks.get(pkey).modify(px, py, pz, 'place', selectedBlock);
+                if(e.button === 0 && chunks.has(key)) chunks.get(key).modify(x, y, z, 'destroy');
+                else if(e.button === 2) {
+                    const px = Math.floor(hit.point.x + nx*0.1);
+                    const py = Math.floor(hit.point.y + ny*0.1);
+                    const pz = Math.floor(hit.point.z + nz*0.1);
+                    // No placing inside player
+                    if(new THREE.Vector3(px,py,pz).distanceTo(camera.position) > 1.5) {
+                        const pkey = `${Math.floor(px/CHUNK_SIZE)},${Math.floor(pz/CHUNK_SIZE)}`;
+                        if(chunks.has(pkey)) chunks.get(pkey).modify(px, py, pz, 'place', selectedBlock);
+                    }
                 }
             }
         });
@@ -370,6 +361,7 @@
         const direction = new THREE.Vector3();
         const keys = {w:0, a:0, s:0, d:0, sp:0};
         let canJump = false;
+        let inWater = false;
 
         document.addEventListener('keydown', e => {
             if(e.code==='KeyW') keys.w=1; if(e.code==='KeyA') keys.a=1;
@@ -383,44 +375,111 @@
         });
 
         const clock = new THREE.Clock();
+        
+        function checkWater() {
+            // Check if head is submerged
+            const cx = Math.floor(camera.position.x);
+            const cy = Math.floor(camera.position.y);
+            const cz = Math.floor(camera.position.z);
+            
+            // Simple check based on height and if no void modification exists
+            // A robust check looks at chunk data, but level check is fast for this scope
+            // We assume water is everywhere at WATER_LEVEL unless overwritten
+            if(cy <= WATER_LEVEL) {
+                // Check if space is actually water (not dug out air or block)
+                const cKey = `${Math.floor(cx/CHUNK_SIZE)},${Math.floor(cz/CHUNK_SIZE)}`;
+                const chunk = chunks.get(cKey);
+                // If chunk doesn't say "Air" or "Solid" here, it's water
+                if(chunk && !chunk.data.has(`${cx},${cy},${cz}`)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         function animate() {
             requestAnimationFrame(animate);
             if(controls.isLocked) {
                 const delta = Math.min(clock.getDelta(), 0.1);
                 
-                velocity.x -= velocity.x * 10.0 * delta;
-                velocity.z -= velocity.z * 10.0 * delta;
-                velocity.y -= 30.0 * delta;
+                // Hand Bobbing
+                if(keys.w || keys.a || keys.s || keys.d) {
+                    handMesh.position.y = -0.5 + Math.sin(Date.now()*0.015)*0.05;
+                    handMesh.position.x = 0.5 + Math.cos(Date.now()*0.015)*0.05;
+                }
+
+                // Physics Settings based on Environment
+                inWater = checkWater();
+                const friction = inWater ? 2.0 : 10.0;
+                const speed = inWater ? 20.0 : 50.0;
+                const gravity = inWater ? 5.0 : 30.0;
+                
+                // Visuals
+                document.getElementById('water-overlay').style.display = inWater ? 'block' : 'none';
+                scene.fog.color = inWater ? waterColor : skyColor;
+                scene.background = inWater ? waterColor : skyColor;
+                scene.fog.near = inWater ? 1 : 20;
+                scene.fog.far = inWater ? 15 : 60;
+
+                velocity.x -= velocity.x * friction * delta;
+                velocity.z -= velocity.z * friction * delta;
+                velocity.y -= gravity * delta;
 
                 direction.z = keys.w - keys.s;
                 direction.x = keys.d - keys.a;
                 direction.normalize();
 
-                if (keys.w || keys.s) velocity.z -= direction.z * 50.0 * delta;
-                if (keys.a || keys.d) velocity.x -= direction.x * 50.0 * delta;
+                if (keys.w || keys.s) velocity.z -= direction.z * speed * delta;
+                if (keys.a || keys.d) velocity.x -= direction.x * speed * delta;
 
                 controls.moveRight(-velocity.x * delta);
                 controls.moveForward(-velocity.z * delta);
                 camera.position.y += velocity.y * delta;
 
-                // Collision
+                // --- COLLISIONS ---
+                // Only collide with SOLID meshes
+                const solidMeshes = Array.from(chunks.values()).map(c => c.meshSolid).filter(m => m);
+                
+                // Floor / Ceiling
                 const rayDown = new THREE.Raycaster(camera.position, new THREE.Vector3(0,-1,0), 0, 1.8);
-                const meshes = Array.from(chunks.values()).map(c=>c.mesh).filter(m=>m);
-                const hits = rayDown.intersectObjects(meshes);
+                const hits = rayDown.intersectObjects(solidMeshes);
                 
-                // Water float or Solid ground
                 if(hits.length > 0) {
-                     // Check if hit block is water (UV check roughly)
-                     // Since we merged meshes, strict material check is hard. 
-                     // We assume solid collision for everything for simplicity in this version.
-                     velocity.y = Math.max(0, velocity.y);
-                     camera.position.y = hits[0].point.y + 1.6;
-                     canJump = true;
+                    velocity.y = Math.max(0, velocity.y);
+                    camera.position.y = hits[0].point.y + 1.6;
+                    canJump = true;
                 }
-                
-                if(keys.sp && canJump) { velocity.y = 12; canJump = false; }
+
+                if(keys.sp) {
+                    if(inWater) velocity.y = 4; // Swim up
+                    else if(canJump) { velocity.y = 10; canJump = false; }
+                }
+
+                // Update Highlight Box
+                raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+                const selHits = raycaster.intersectObjects(solidMeshes);
+                if(selHits.length > 0 && selHits[0].distance < 5) {
+                    const h = selHits[0];
+                    selBox.visible = true;
+                    selBox.position.set(
+                        Math.floor(h.point.x - h.face.normal.x*0.1) + 0.5,
+                        Math.floor(h.point.y - h.face.normal.y*0.1) + 0.5,
+                        Math.floor(h.point.z - h.face.normal.z*0.1) + 0.5
+                    );
+                } else selBox.visible = false;
+
                 updateChunks();
             }
+
+            // Particles
+            for(let i=particles.length-1; i>=0; i--) {
+                const p = particles[i];
+                p.position.add(p.vel.clone().multiplyScalar(0.01));
+                p.vel.y -= 0.1; // Grav
+                p.scale.multiplyScalar(0.9);
+                if(p.scale.x < 0.01) { scene.remove(p); particles.splice(i,1); }
+            }
+
             if(camera.position.y < -30) { camera.position.set(0,20,0); velocity.set(0,0,0); }
             renderer.render(scene, camera);
         }
