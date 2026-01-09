@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Minecraft: Final Version</title>
+    <title>Minecraft: Bedrock Edition</title>
     <style>
         body { margin: 0; overflow: hidden; background: #87CEEB; font-family: 'Segoe UI', monospace; user-select: none; }
         
@@ -29,29 +29,21 @@
         .slot {
             width: 40px; height: 40px; border: 2px solid #555; background: rgba(0,0,0,0.3);
             display: flex; justify-content: center; align-items: center; color: white;
-            font-weight: bold; font-size: 12px; transition: 0.1s;
+            font-weight: bold; font-size: 12px; transition: 0.1s; position: relative;
         }
         .active { border-color: white; background: rgba(255,255,255,0.2); transform: scale(1.1); }
         
-        #start-screen {
+        #water-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.8); display: flex; flex-direction: column;
-            justify-content: center; align-items: center; color: white; z-index: 20;
+            background: rgba(0, 40, 150, 0.5); display: none; z-index: 5; pointer-events: none;
         }
-        h1 { font-size: 40px; margin-bottom: 10px; }
-        p { font-size: 18px; color: #ccc; }
     </style>
 </head>
 <body>
-    <div id="start-screen">
-        <h1>MINECRAFT JS</h1>
-        <p>Click anywhere to Start</p>
-        <p>WASD to Move | Space to Jump | Click to Mine/Build</p>
-    </div>
-
+    <div id="water-overlay"></div>
     <div id="crosshair"></div>
     <div id="ui">
-        <b>Final Version</b><br>
+        <b>Bedrock Edition</b><br>
         FPS: <span id="fps">60</span><br>
         Coords: <span id="coords">0, 0, 0</span>
     </div>
@@ -74,23 +66,24 @@
         const CHUNK_SIZE = 16;
         const RENDER_DISTANCE = 4; 
         const WORLD_H = 32;
+        const WATER_LEVEL = 8;
         
         // Block IDs
         const BLOCKS = [
-            null, // 0 is Air
+            null, // 0
             { name: 'Grass', color: '#4caf50', top: '#66bb6a', side: '#5d4037' },
             { name: 'Dirt',  color: '#5d4037' },
             { name: 'Stone', color: '#757575' },
             { name: 'Wood',  color: '#5d4037', side: '#3e2723' },
             { name: 'Leaf',  color: '#2e7d32', transparent: true },
             { name: 'Sand',  color: '#e6c9a8' },
-            { name: 'Water', color: '#29b6f6', transparent: true, fluid: true },
+            { name: 'Water', color: '#29b6f6', transparent: true, fluid: true }, // ID 7
             { name: 'Brick', color: '#8d6e63' },
+            { name: 'Bedrock', color: '#111111' }, // ID 9
             { name: 'Glass', color: '#ffffff', transparent: true }
         ];
 
-        // --- TEXTURE ATLAS GENERATOR ---
-        // Creates a texture map dynamically so we don't need external images
+        // --- TEXTURE ATLAS ---
         function createAtlas() {
             const canvas = document.createElement('canvas');
             canvas.width = 32 * BLOCKS.length; canvas.height = 32;
@@ -98,18 +91,16 @@
             
             BLOCKS.forEach((b, i) => {
                 if(!b) return;
-                // Base
                 ctx.fillStyle = b.side || b.color;
                 ctx.fillRect(i*32, 0, 32, 32);
                 
-                // Texture Noise
+                // Noise
                 ctx.fillStyle = 'rgba(0,0,0,0.1)';
                 for(let k=0; k<10; k++) ctx.fillRect(i*32+Math.random()*32, Math.random()*32, 2, 2);
 
-                // Specific details
-                if(b.name==='Grass') { ctx.fillStyle = b.top; ctx.fillRect(i*32, 0, 32, 10); } // Grass top layer
+                if(b.name==='Grass') { ctx.fillStyle = b.top; ctx.fillRect(i*32, 0, 32, 10); } 
                 if(b.name==='Wood') { ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.fillRect(i*32+8,0,4,32); ctx.fillRect(i*32+20,0,4,32); }
-                if(b.name==='Brick') { ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.fillRect(i*32,15,32,2); ctx.fillRect(i*32+15,0,2,15); }
+                if(b.name==='Bedrock') { ctx.fillStyle='black'; ctx.fillRect(i*32+5,5,22,22); }
                 if(b.name==='Leaf' || b.name==='Glass') { ctx.strokeStyle='white'; ctx.strokeRect(i*32+2,2,28,28); }
             });
 
@@ -143,7 +134,6 @@
         // --- WORLD LOGIC ---
         const chunks = new Map();
 
-        // Simple Noise Function
         function noise(x, z) { return Math.sin(x/15) * Math.cos(z/15); }
 
         class Chunk {
@@ -156,7 +146,6 @@
             }
 
             idx(x, y, z) { return x + z*CHUNK_SIZE + y*CHUNK_SIZE*CHUNK_SIZE; }
-            
             set(x,y,z,v) { if(x>=0 && x<16 && z>=0 && z<16 && y>=0 && y<WORLD_H) this.blocks[this.idx(x,y,z)] = v; }
             get(x,y,z) { if(x>=0 && x<16 && z>=0 && z<16 && y>=0 && y<WORLD_H) return this.blocks[this.idx(x,y,z)]; return 0; }
 
@@ -169,15 +158,23 @@
                         // Terrain Height
                         const h = Math.floor(noise(sx+x, sz+z) * 5 + 15);
                         
-                        for(let y=0; y<=h; y++) {
-                            let id = 3; // Stone
-                            if(y === h) id = 1; // Grass
-                            else if(y > h-3) id = 2; // Dirt
+                        // Fill Vertical Column
+                        for(let y=0; y<WORLD_H; y++) {
+                            let id = 0;
+                            
+                            if (y === 0) id = 9; // Bedrock
+                            else if (y <= h) {
+                                if(y === h) id = (y <= WATER_LEVEL + 1) ? 6 : 1; // Sand if near water, else Grass
+                                else if (y > h-3) id = 2; // Dirt
+                                else id = 3; // Stone
+                            }
+                            else if (y <= WATER_LEVEL) id = 7; // Water
+
                             this.set(x, y, z, id);
                         }
                         
-                        // Trees
-                        if(x > 2 && x < 14 && z > 2 && z < 14 && Math.random() > 0.98) {
+                        // Trees (only on grass above water)
+                        if(this.get(x, h, z) === 1 && Math.random() > 0.98) {
                             const th = h+1;
                             for(let i=0; i<4; i++) this.set(x, th+i, z, 4); // Wood
                             for(let lx=x-2; lx<=x+2; lx++) for(let lz=z-2; lz<=z+2; lz++) {
@@ -205,7 +202,6 @@
                     const ind = trans ? indT : indO;
                     let vc = trans ? vcT : vcO;
 
-                    // Vertices
                     const sx=x, sy=y, sz=z;
                     if(nx===1) { pos.push(sx+1,sy,sz+1, sx+1,sy,sz, sx+1,sy+1,sz, sx+1,sy+1,sz+1); norm.push(1,0,0, 1,0,0, 1,0,0, 1,0,0); }
                     if(nx===-1) { pos.push(sx,sy,sz, sx,sy,sz+1, sx,sy+1,sz+1, sx,sy+1,sz); norm.push(-1,0,0, -1,0,0, -1,0,0, -1,0,0); }
@@ -214,11 +210,9 @@
                     if(nz===1) { pos.push(sx,sy,sz+1, sx+1,sy,sz+1, sx+1,sy+1,sz+1, sx,sy+1,sz+1); norm.push(0,0,1, 0,0,1, 0,0,1, 0,0,1); }
                     if(nz===-1) { pos.push(sx+1,sy,sz, sx,sy,sz, sx,sy+1,sz, sx+1,sy+1,sz); norm.push(0,0,-1, 0,0,-1, 0,0,-1, 0,0,-1); }
 
-                    // UVs
                     const step = 1/BLOCKS.length;
                     const u0 = id * step; 
                     uv.push(u0,0, u0+step,0, u0+step,1, u0,1);
-
                     ind.push(vc, vc+1, vc+2, vc, vc+2, vc+3);
                     
                     if(trans) vcT+=4; else vcO+=4;
@@ -229,16 +223,13 @@
                     if(id === 0) continue;
                     const props = BLOCKS[id];
 
-                    // Check neighbors
-                    const neighbors = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
-                    for(let d of neighbors) {
+                    [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].forEach(d => {
                         const nid = this.get(x+d[0], y+d[1], z+d[2]);
                         const nprops = BLOCKS[nid];
-                        // Draw face if neighbor is air (0) OR transparent (and not same type if transparent)
-                        if(nid === 0 || (nprops && nprops.transparent && nprops !== props)) {
+                        if(nid === 0 || (nprops && nprops.transparent && (nid!==id || !props.fluid))) {
                             addFace(x,y,z, d[0],d[1],d[2], id, props.transparent);
                         }
-                    }
+                    });
                 }
 
                 if(posO.length > 0) {
@@ -299,7 +290,7 @@
         }
 
         // --- PHYSICS ---
-        const player = { pos: new THREE.Vector3(0, 30, 0), vel: new THREE.Vector3() }; // Safe Spawn Y=30
+        const player = { pos: new THREE.Vector3(0, 30, 0), vel: new THREE.Vector3() }; 
         const keys = { w:0, a:0, s:0, d:0, sp:0 };
         let selectedBlock = 1;
 
@@ -307,54 +298,55 @@
             const b = getBlock(Math.floor(x), Math.floor(y), Math.floor(z));
             return b > 0 && !BLOCKS[b].fluid;
         }
+        
+        function checkWater(x, y, z) {
+            const b = getBlock(Math.floor(x), Math.floor(y), Math.floor(z));
+            return b === 7; // Water ID
+        }
 
         function updatePhysics(dt) {
-            // Friction
-            player.vel.x *= 0.7; player.vel.z *= 0.7;
+            const inWater = checkWater(player.pos.x, player.pos.y, player.pos.z);
+            document.getElementById('water-overlay').style.display = inWater ? 'block' : 'none';
+            scene.fog.color.setHex(inWater ? 0x002050 : 0x87CEEB);
 
-            // Input
+            player.vel.x *= inWater ? 0.8 : 0.7; 
+            player.vel.z *= inWater ? 0.8 : 0.7;
+
             const dir = new THREE.Vector3();
             camera.getWorldDirection(dir); dir.y = 0; dir.normalize();
             const right = new THREE.Vector3(); right.crossVectors(camera.up, dir).negate();
-            const speed = 25 * dt;
+            const speed = (inWater ? 15 : 25) * dt;
 
             if(keys.w) player.vel.add(dir.multiplyScalar(speed));
             if(keys.s) player.vel.sub(dir.multiplyScalar(speed));
             if(keys.a) player.vel.add(right.multiplyScalar(-speed));
             if(keys.d) player.vel.sub(right.multiplyScalar(-speed));
 
-            // Gravity
-            player.vel.y -= 35 * dt;
+            player.vel.y -= (inWater ? 10 : 35) * dt;
+            if(inWater && keys.sp) player.vel.y = 5; // Swim
 
-            // Collision Detection (Iterative)
-            // X Axis
+            // Collision Detection
             player.pos.x += player.vel.x * dt;
             if(checkCollision(player.pos.x + (player.vel.x>0?0.3:-0.3), player.pos.y, player.pos.z) || 
                checkCollision(player.pos.x + (player.vel.x>0?0.3:-0.3), player.pos.y+1, player.pos.z)) {
-                player.pos.x -= player.vel.x * dt;
-                player.vel.x = 0;
+                player.pos.x -= player.vel.x * dt; player.vel.x = 0;
             }
-            // Z Axis
+
             player.pos.z += player.vel.z * dt;
             if(checkCollision(player.pos.x, player.pos.y, player.pos.z + (player.vel.z>0?0.3:-0.3)) ||
                checkCollision(player.pos.x, player.pos.y+1, player.pos.z + (player.vel.z>0?0.3:-0.3))) {
-                player.pos.z -= player.vel.z * dt;
-                player.vel.z = 0;
-            }
-            // Y Axis
-            player.pos.y += player.vel.y * dt;
-            if(checkCollision(player.pos.x, player.pos.y-1.5, player.pos.z)) { // Feet
-                player.pos.y = Math.floor(player.pos.y-1.5) + 2.5; // Snap up
-                player.vel.y = 0;
-                if(keys.sp) player.vel.y = 10; // Jump
-            }
-            
-            // Ceiling
-            if(player.vel.y > 0 && checkCollision(player.pos.x, player.pos.y+0.5, player.pos.z)) {
-                player.vel.y = 0;
+                player.pos.z -= player.vel.z * dt; player.vel.z = 0;
             }
 
-            if(player.pos.y < -30) player.pos.set(0, 40, 0); // Void reset
+            player.pos.y += player.vel.y * dt;
+            if(checkCollision(player.pos.x, player.pos.y-1.5, player.pos.z)) { 
+                player.pos.y = Math.floor(player.pos.y-1.5) + 2.5; 
+                player.vel.y = 0;
+                if(keys.sp && !inWater) player.vel.y = 10; 
+            }
+            if(player.vel.y > 0 && checkCollision(player.pos.x, player.pos.y+0.5, player.pos.z)) player.vel.y = 0;
+
+            if(player.pos.y < -30) player.pos.set(0, 40, 0); 
             
             camera.position.copy(player.pos);
         }
@@ -362,7 +354,7 @@
         // --- CONTROLS UI ---
         const hotbar = document.getElementById('hotbar');
         BLOCKS.forEach((b, i) => {
-            if(!b) return;
+            if(!b || b.name === 'Bedrock') return; // Don't show bedrock in hotbar
             const el = document.createElement('div');
             el.className = 'slot';
             el.innerText = i;
@@ -372,18 +364,20 @@
         });
 
         const controls = new PointerLockControls(camera, document.body);
-        document.getElementById('start-screen').addEventListener('click', () => {
-            document.getElementById('start-screen').style.display = 'none';
-            controls.lock();
-        });
+        document.addEventListener('click', () => controls.lock());
 
         document.addEventListener('keydown', e => {
             if(e.code==='KeyW') keys.w=1; if(e.code==='KeyA') keys.a=1;
             if(e.code==='KeyS') keys.s=1; if(e.code==='KeyD') keys.d=1;
             if(e.code==='Space') keys.sp=1;
             if(e.key>='1' && e.key<='9') {
-                selectedBlock = parseInt(e.key);
-                document.querySelectorAll('.slot').forEach((s, idx) => s.className = 'slot' + (idx+1===selectedBlock?' active':''));
+                const idx = parseInt(e.key);
+                if(BLOCKS[idx] && BLOCKS[idx].name !== 'Bedrock') {
+                    selectedBlock = idx;
+                    document.querySelectorAll('.slot').forEach(s => s.classList.remove('active'));
+                    const slot = Array.from(hotbar.children).find(el => el.innerText == idx);
+                    if(slot) slot.classList.add('active');
+                }
             }
         });
         document.addEventListener('keyup', e => {
@@ -406,9 +400,10 @@
                 const by = Math.floor(h.point.y - n.y * 0.1);
                 const bz = Math.floor(h.point.z - n.z * 0.1);
 
-                if(e.button === 0) setBlock(bx, by, bz, 0); // Mine
-                else if(e.button === 2) { // Place
-                    // Player intersection check
+                if(e.button === 0) {
+                    const blk = getBlock(bx, by, bz);
+                    if(blk !== 9) setBlock(bx, by, bz, 0); // Don't break bedrock (ID 9)
+                } else if(e.button === 2) { 
                     const tx=bx+n.x, ty=by+n.y, tz=bz+n.z;
                     if(Math.abs(tx-player.pos.x)<0.6 && Math.abs(tz-player.pos.z)<0.6 && ty>=player.pos.y-1.6 && ty<=player.pos.y+0.5) return;
                     setBlock(tx, ty, tz, selectedBlock);
@@ -416,7 +411,7 @@
             }
         });
 
-        // --- MAIN LOOP ---
+        // --- LOOP ---
         const clock = new THREE.Clock();
         function animate() {
             requestAnimationFrame(animate);
@@ -426,11 +421,11 @@
                 updatePhysics(dt);
                 updateChunks();
                 document.getElementById('coords').innerText = `${Math.floor(player.pos.x)}, ${Math.floor(player.pos.y)}, ${Math.floor(player.pos.z)}`;
+                document.getElementById('fps').innerText = Math.round(1/dt);
             }
             renderer.render(scene, camera);
         }
         
-        // Init
         updateChunks();
         animate();
         
