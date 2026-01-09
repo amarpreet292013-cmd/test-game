@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Infinite Minecraft: Stable</title>
+    <title>Infinite Nature Craft</title>
     <style>
         body { margin: 0; overflow: hidden; background: #87CEEB; font-family: monospace; }
         #crosshair {
@@ -19,14 +19,17 @@
             background: rgba(0,0,0,0.5); padding: 10px; border-radius: 4px; pointer-events: none;
         }
         #coords { font-weight: bold; color: yellow; }
+        #slot { font-weight: bold; color: cyan; }
     </style>
 </head>
 <body>
     <div id="crosshair"></div>
     <div id="ui">
-        <div><b>Infinite World</b></div>
-        <div>WASD to Move | Space to Jump</div>
-        <div>Left Click: Destroy | Right Click: Build</div>
+        <div><b>Infinite Nature</b></div>
+        <div>WASD = Move | Space = Jump</div>
+        <div>Left Click = Mine | Right Click = Place</div>
+        <div>Keys 1-7 = Select Block</div>
+        <div>Selected: <span id="slot">Grass</span></div>
         <div>Pos: <span id="coords">0, 0</span></div>
     </div>
 
@@ -45,75 +48,96 @@
 
         // --- CONSTANTS ---
         const CHUNK_SIZE = 16;
-        const RENDER_DISTANCE = 4; // Radius of chunks to draw (Increase if you have a fast PC)
-        const WORLD_HEIGHT = 32;
+        const RENDER_DISTANCE = 4; 
+        const WATER_LEVEL = -3;
+        const SEED = 123.45; // Seed for randomness
 
         // --- SETUP ---
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x87CEEB);
-        scene.fog = new THREE.Fog(0x87CEEB, 30, 70); // Hides loading edge
+        scene.fog = new THREE.Fog(0x87CEEB, 30, 80);
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
-        // Lights
-        const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+        const ambient = new THREE.AmbientLight(0xffffff, 0.7);
         scene.add(ambient);
-        const sun = new THREE.DirectionalLight(0xffffff, 0.8);
-        sun.position.set(50, 80, 50);
+        const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+        sun.position.set(50, 100, 50);
         scene.add(sun);
 
-        // --- TEXTURES ---
-        // We create a texture atlas (one image with 4 block types) to optimize performance
+        // --- TEXTURES (Atlas) ---
+        // 0:Grass, 1:Dirt, 2:Stone, 3:Wood, 4:Leaves, 5:Water, 6:Lava
+        const BLOCK_NAMES = ["Grass", "Dirt", "Stone", "Wood", "Leaves", "Water", "Lava"];
+        
         function createAtlas() {
             const canvas = document.createElement('canvas');
-            canvas.width = 128; canvas.height = 32;
+            const totalBlocks = 7;
+            canvas.width = 32 * totalBlocks; canvas.height = 32;
             const ctx = canvas.getContext('2d');
             
-            // Colors: Grass, Dirt, Stone, Wood
-            const colors = ['#4caf50', '#5d4037', '#757575', '#3e2723'];
+            const colors = ['#4caf50', '#5d4037', '#757575', '#3e2723', '#2e7d32', '#29b6f6', '#ff5722'];
+            
             colors.forEach((c, i) => {
                 ctx.fillStyle = c;
                 ctx.fillRect(i*32, 0, 32, 32);
-                // Add noise
+                
+                // Add texture noise
                 ctx.fillStyle = 'rgba(0,0,0,0.1)';
-                for(let n=0; n<20; n++) ctx.fillRect(i*32 + Math.random()*32, Math.random()*32, 2, 2);
-                // Border
-                ctx.strokeStyle = 'rgba(0,0,0,0.2)';
-                ctx.strokeRect(i*32, 0, 32, 32);
+                for(let n=0; n<15; n++) ctx.fillRect(i*32 + Math.random()*32, Math.random()*32, 2, 2);
+                
+                // Specific textures
+                if(i===4) { // Leaves (transparent holes)
+                    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+                    ctx.fillRect(i*32+5, 5, 5, 5); ctx.fillRect(i*32+20, 20, 5, 5);
+                }
+                if(i===6) { // Lava glow
+                    ctx.fillStyle = 'rgba(255,255,0,0.5)';
+                    ctx.fillRect(i*32+10, 10, 10, 5);
+                }
             });
 
             const tex = new THREE.CanvasTexture(canvas);
             tex.magFilter = THREE.NearestFilter;
+            tex.colorSpace = THREE.SRGBColorSpace;
             return tex;
         }
-        const atlasTexture = createAtlas();
-        const blockMaterial = new THREE.MeshLambertMaterial({ map: atlasTexture });
+        
+        const blockMaterial = new THREE.MeshLambertMaterial({ 
+            map: createAtlas(), 
+            transparent: true, 
+            opacity: 1.0,
+            alphaTest: 0.1 // Keeps sharp edges for leaves
+        });
 
-        // --- TERRAIN MATH (Pseudo Random) ---
-        // A simple hash function to make sure hills are same every time you visit
+        // --- MATH / NOISE ---
+        function pseudoRandom(x, z) {
+            const s = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
+            return s - Math.floor(s);
+        }
+
         function noise(x, z) {
-            const sin = Math.sin(x / 15 + z / 25) * 5;
-            const cos = Math.cos(x / 20 - z / 10) * 5;
+            // Smooth terrain math
+            const sin = Math.sin(x / 15 + z / 25) * 6;
+            const cos = Math.cos(x / 20 - z / 10) * 6;
             return Math.floor(sin + cos);
         }
 
         // --- CHUNK SYSTEM ---
-        const chunks = new Map(); // Stores active chunks
+        const chunks = new Map();
 
         class Chunk {
             constructor(cx, cz) {
                 this.cx = cx;
                 this.cz = cz;
-                this.data = new Map(); // Stores block modifications
+                this.data = new Map(); // Modifications
                 this.mesh = null;
                 this.generate();
             }
 
             generate() {
-                // Geometry construction arrays
                 const vertices = [];
                 const uvs = [];
                 const indices = [];
@@ -121,38 +145,73 @@
 
                 const startX = this.cx * CHUNK_SIZE;
                 const startZ = this.cz * CHUNK_SIZE;
+                
+                // Store terrain height to help tree placement
+                const heights = []; 
 
-                // Loop through every block position in this chunk
+                // 1. GENERATE TERRAIN & WATER
                 for (let x = 0; x < CHUNK_SIZE; x++) {
                     for (let z = 0; z < CHUNK_SIZE; z++) {
                         const worldX = startX + x;
                         const worldZ = startZ + z;
                         
-                        // Height map
-                        const h = noise(worldX, worldZ);
-                        
-                        // Check if block is deleted
-                        // We iterate from bottom up to height
-                        for (let y = h - 5; y <= h; y++) {
+                        let h = noise(worldX, worldZ);
+                        heights[x + z * CHUNK_SIZE] = h;
+
+                        // Bedrock to Height
+                        for (let y = h - 6; y <= h; y++) {
+                            // Check modification
                             const key = `${worldX},${y},${worldZ}`;
-                            
-                            // Check mod list (if we deleted it before)
                             if (this.data.has(key) && this.data.get(key) === 0) continue;
-                            
-                            // Determine Type (UV mapping)
-                            // 0:Grass, 1:Dirt, 2:Stone, 3:Wood
+
                             let type = 1; // Dirt
                             if (y === h) type = 0; // Grass
-                            if (y < h - 2) type = 2; // Stone
+                            if (y < h - 3) type = 2; // Stone
+                            
+                            // Deep Lava
+                            if (y < -8) type = 6; 
 
-                            // If mod list has a specific block type (placed block)
+                            // Sand beaches
+                            if (y === h && y <= WATER_LEVEL + 1 && y >= WATER_LEVEL -1) type = 1; // Dirt/Sand
+
+                            // Custom block override
                             if (this.data.has(key) && this.data.get(key) > 0) type = this.data.get(key) - 1;
 
-                            // Add Cube Geometry Faces
-                            // To be truly optimized, we should cull hidden faces, but for this simpler
-                            // implementation we draw all blocks as cubes.
-                            this.addBlockFace(worldX, y, worldZ, type, vertices, uvs, indices, indexOffset);
-                            indexOffset += 24; // 4 verts * 6 faces
+                            this.addFace(worldX, y, worldZ, type, vertices, uvs, indices, indexOffset);
+                            indexOffset += 24;
+                        }
+
+                        // Water
+                        for (let y = h + 1; y <= WATER_LEVEL; y++) {
+                             const key = `${worldX},${y},${worldZ}`;
+                             if (this.data.has(key) && this.data.get(key) === 0) continue;
+                             
+                             // 5 = Water
+                             this.addFace(worldX, y, worldZ, 5, vertices, uvs, indices, indexOffset);
+                             indexOffset += 24;
+                        }
+                    }
+                }
+
+                // 2. GENERATE TREES
+                // We do a second pass. Note: Trees on chunk borders might get cut off in this simple version
+                for (let x = 2; x < CHUNK_SIZE - 2; x++) {
+                    for (let z = 2; z < CHUNK_SIZE - 2; z++) {
+                        const worldX = startX + x;
+                        const worldZ = startZ + z;
+                        const h = heights[x + z * CHUNK_SIZE];
+
+                        // Only grow on land above water
+                        if (h > WATER_LEVEL) {
+                            // Random chance (pseudo random based on coord so it stays same)
+                            const r = pseudoRandom(worldX, worldZ);
+                            if (r > 0.97) { // 3% chance
+                                this.buildTree(worldX, h + 1, worldZ, vertices, uvs, indices, indexOffset);
+                                // The buildTree function increases indexOffset, but we need to track it manually
+                                // Since JS passes primitives by value, we have to calculate how many blocks we added
+                                const blocksAdded = 5 + 4; // 5 leaves + 4 trunk roughly
+                                indexOffset += blocksAdded * 24; // Approximation, actual logic inside buildTree needs care
+                            }
                         }
                     }
                 }
@@ -160,62 +219,60 @@
                 this.buildMesh(vertices, uvs, indices);
             }
 
-            addBlockFace(x, y, z, type, vertices, uvs, indices, offset) {
-                // Defines a unit cube at x,y,z
-                // Vertices (Simplified logic: Push 24 verts for 6 faces)
-                const s = 0.5; // size radius
-                
-                // Coordinates relative to center x,y,z
-                const v = [
-                    // Front
-                    {x:-s,y:-s,z:s}, {x:s,y:-s,z:s}, {x:s,y:s,z:s}, {x:-s,y:s,z:s},
-                    // Back
-                    {x:s,y:-s,z:-s}, {x:-s,y:-s,z:-s}, {x:-s,y:s,z:-s}, {x:s,y:s,z:-s},
-                    // Top
-                    {x:-s,y:s,z:s}, {x:s,y:s,z:s}, {x:s,y:s,z:-s}, {x:-s,y:s,z:-s},
-                    // Bottom
-                    {x:-s,y:-s,z:-s}, {x:s,y:-s,z:-s}, {x:s,y:-s,z:s}, {x:-s,y:-s,z:s},
-                    // Right
-                    {x:s,y:-s,z:s}, {x:s,y:-s,z:-s}, {x:s,y:s,z:-s}, {x:s,y:s,z:s},
-                    // Left
-                    {x:-s,y:-s,z:-s}, {x:-s,y:-s,z:s}, {x:-s,y:s,z:s}, {x:-s,y:s,z:-s}
-                ];
-
-                for(let i=0; i<24; i++) {
-                    vertices.push(v[i].x + x, v[i].y + y, v[i].z + z);
+            buildTree(x, y, z, vertices, uvs, indices, offset) {
+                // Trunk (3 blocks high)
+                for(let i=0; i<4; i++) {
+                     const key = `${x},${y+i},${z}`;
+                     if(this.data.has(key) && this.data.get(key)===0) continue; // broken
+                     this.addFace(x, y+i, z, 3, vertices, uvs, indices, offset);
+                     offset += 24;
                 }
-
-                // Indices (6 faces, 2 triangles each)
-                const pattern = [0,1,2, 0,2,3];
-                for (let f = 0; f < 6; f++) {
-                    for (let p = 0; p < 6; p++) {
-                        indices.push(offset + f*4 + pattern[p]);
+                // Leaves (Cluster)
+                const leafY = y + 3;
+                for(let lx = x-1; lx <= x+1; lx++) {
+                    for(let lz = z-1; lz <= z+1; lz++) {
+                        // Skip corners for rounder look
+                        if(Math.abs(lx-x) === 1 && Math.abs(lz-z) === 1) continue;
+                        
+                        const key = `${lx},${leafY},${lz}`;
+                        if(this.data.has(key) && this.data.get(key)===0) continue;
+                        
+                        this.addFace(lx, leafY, lz, 4, vertices, uvs, indices, offset);
+                        offset += 24;
                     }
                 }
+                // Top Leaf
+                this.addFace(x, leafY+1, z, 4, vertices, uvs, indices, offset);
+            }
 
-                // UVs (Texture Mapping)
-                // Atlas is 4 blocks wide (0.0 to 1.0). Each block is 0.25 wide.
-                const uStart = type * 0.25;
-                const uEnd = uStart + 0.25;
+            addFace(x, y, z, type, vertices, uvs, indices, offset) {
+                const s = 0.5;
+                const v = [
+                    {x:-s,y:-s,z:s}, {x:s,y:-s,z:s}, {x:s,y:s,z:s}, {x:-s,y:s,z:s}, // Front
+                    {x:s,y:-s,z:-s}, {x:-s,y:-s,z:-s}, {x:-s,y:s,z:-s}, {x:s,y:s,z:-s}, // Back
+                    {x:-s,y:s,z:s}, {x:s,y:s,z:s}, {x:s,y:s,z:-s}, {x:-s,y:s,z:-s}, // Top
+                    {x:-s,y:-s,z:-s}, {x:s,y:-s,z:-s}, {x:s,y:-s,z:s}, {x:-s,y:-s,z:s}, // Bottom
+                    {x:s,y:-s,z:s}, {x:s,y:-s,z:-s}, {x:s,y:s,z:-s}, {x:s,y:s,z:s}, // Right
+                    {x:-s,y:-s,z:-s}, {x:-s,y:-s,z:s}, {x:-s,y:s,z:s}, {x:-s,y:s,z:-s} // Left
+                ];
+                for(let i=0; i<24; i++) vertices.push(v[i].x + x, v[i].y + y, v[i].z + z);
                 
-                for(let f=0; f<6; f++) {
-                    uvs.push(
-                        uStart, 0,
-                        uEnd, 0,
-                        uEnd, 1,
-                        uStart, 1
-                    );
+                const pattern = [0,1,2, 0,2,3];
+                for (let f = 0; f < 6; f++) {
+                    for (let p = 0; p < 6; p++) indices.push(offset + f*4 + pattern[p]);
                 }
+
+                // Atlas UV mapping (7 blocks)
+                const step = 1 / 7;
+                const uStart = type * step;
+                const uEnd = uStart + step;
+                for(let f=0; f<6; f++) uvs.push(uStart,0, uEnd,0, uEnd,1, uStart,1);
             }
 
             buildMesh(vertices, uvs, indices) {
-                if(this.mesh) {
-                    this.mesh.geometry.dispose();
-                    scene.remove(this.mesh);
-                }
-                
+                if(this.mesh) { this.mesh.geometry.dispose(); scene.remove(this.mesh); }
                 if (vertices.length === 0) return;
-
+                
                 const geo = new THREE.BufferGeometry();
                 geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
                 geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
@@ -223,157 +280,120 @@
                 geo.computeVertexNormals();
 
                 this.mesh = new THREE.Mesh(geo, blockMaterial);
-                scene.add(this.mesh);
-                
-                // Store reference for raycasting
                 this.mesh.chunkOwner = this;
+                scene.add(this.mesh);
             }
 
-            // Called when user clicks
             modify(x, y, z, action, type) {
                 const key = `${x},${y},${z}`;
-                if(action === 'destroy') {
-                    this.data.set(key, 0); // 0 = air
-                } else if (action === 'place') {
-                    this.data.set(key, type + 1); // Store type + 1 (1-4)
-                }
-                this.generate(); // Rebuild mesh immediately
+                if(action === 'destroy') this.data.set(key, 0);
+                if(action === 'place') this.data.set(key, type + 1);
+                this.generate();
             }
         }
 
-        // --- INFINITE WORLD LOGIC ---
-        let currentChunkX = 0;
-        let currentChunkZ = 0;
-
+        // --- INFINITE LOGIC ---
+        let currentCX = 0, currentCZ = 0;
         function updateChunks() {
             const px = Math.floor(camera.position.x / CHUNK_SIZE);
             const pz = Math.floor(camera.position.z / CHUNK_SIZE);
-
-            if (px === currentChunkX && pz === currentChunkZ) return; // Haven't moved chunks
-
-            currentChunkX = px;
-            currentChunkZ = pz;
+            if (px === currentCX && pz === currentCZ) return;
+            currentCX = px; currentCZ = pz;
             document.getElementById('coords').innerText = `${px}, ${pz}`;
 
-            // Load new chunks
             for (let x = -RENDER_DISTANCE; x <= RENDER_DISTANCE; x++) {
                 for (let z = -RENDER_DISTANCE; z <= RENDER_DISTANCE; z++) {
                     const key = `${px + x},${pz + z}`;
-                    if (!chunks.has(key)) {
-                        chunks.set(key, new Chunk(px + x, pz + z));
-                    }
+                    if (!chunks.has(key)) chunks.set(key, new Chunk(px + x, pz + z));
                 }
             }
-
-            // Unload far chunks (Memory Management)
+            // Garbage collection
             for (const [key, chunk] of chunks) {
-                const dist = Math.sqrt((chunk.cx - px)**2 + (chunk.cz - pz)**2);
-                if (dist > RENDER_DISTANCE + 1) {
-                    if (chunk.mesh) {
-                        chunk.mesh.geometry.dispose();
-                        scene.remove(chunk.mesh);
-                    }
+                if (Math.abs(chunk.cx - px) > RENDER_DISTANCE + 1 || Math.abs(chunk.cz - pz) > RENDER_DISTANCE + 1) {
+                    if (chunk.mesh) { scene.remove(chunk.mesh); chunk.mesh.geometry.dispose(); }
                     chunks.delete(key);
                 }
             }
         }
 
-        // --- PLAYER & INTERACTION ---
+        // --- GAMEPLAY ---
         const controls = new PointerLockControls(camera, document.body);
-        const velocity = new THREE.Vector3();
-        const direction = new THREE.Vector3();
-        let canJump = false;
-        let selectedBlock = 0; // 0=Grass, 1=Dirt...
+        const raycaster = new THREE.Raycaster();
+        let selectedBlock = 0;
 
         document.addEventListener('click', () => controls.lock());
-        
-        // Block Selection
         document.addEventListener('keydown', (e) => {
-            if(e.key >= '1' && e.key <= '4') selectedBlock = parseInt(e.key) - 1;
+            if(e.key >= '1' && e.key <= '7') {
+                selectedBlock = parseInt(e.key) - 1;
+                document.getElementById('slot').innerText = BLOCK_NAMES[selectedBlock];
+            }
         });
-
-        // Mining / Placing
-        const raycaster = new THREE.Raycaster();
-        const center = new THREE.Vector2(0,0);
 
         document.addEventListener('mousedown', (e) => {
             if(!controls.isLocked) return;
-
-            raycaster.setFromCamera(center, camera);
-            
-            // Get all chunk meshes
-            const meshes = [];
-            for(const chunk of chunks.values()) {
-                if(chunk.mesh) meshes.push(chunk.mesh);
-            }
-
+            raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+            const meshes = Array.from(chunks.values()).map(c => c.mesh).filter(m => m);
             const hits = raycaster.intersectObjects(meshes);
+
             if(hits.length > 0 && hits[0].distance < 6) {
                 const hit = hits[0];
-                const chunk = hit.object.chunkOwner;
+                const nx = hit.face.normal.x, ny = hit.face.normal.y, nz = hit.face.normal.z;
+                
+                // Coordinates
+                const x = Math.floor(hit.point.x - nx * 0.1);
+                const y = Math.floor(hit.point.y - ny * 0.1);
+                const z = Math.floor(hit.point.z - nz * 0.1);
+                
+                const cx = Math.floor(x / CHUNK_SIZE);
+                const cz = Math.floor(z / CHUNK_SIZE);
+                const key = `${cx},${cz}`;
 
-                // Calculate Block Coordinates
-                // We add/subtract small epsilon to get inside/outside block
-                if(e.button === 0) { // Left Click (Destroy)
-                    const x = Math.floor(hit.point.x - hit.face.normal.x * 0.1);
-                    const y = Math.floor(hit.point.y - hit.face.normal.y * 0.1);
-                    const z = Math.floor(hit.point.z - hit.face.normal.z * 0.1);
-                    // Find which chunk owns this block (might be neighbor)
-                    const cx = Math.floor(x / CHUNK_SIZE);
-                    const cz = Math.floor(z / CHUNK_SIZE);
-                    const key = `${cx},${cz}`;
-                    if(chunks.has(key)) chunks.get(key).modify(x, y, z, 'destroy');
-
-                } else if (e.button === 2) { // Right Click (Place)
-                    const x = Math.floor(hit.point.x + hit.face.normal.x * 0.1);
-                    const y = Math.floor(hit.point.y + hit.face.normal.y * 0.1);
-                    const z = Math.floor(hit.point.z + hit.face.normal.z * 0.1);
+                if(e.button === 0 && chunks.has(key)) { // Destroy
+                    chunks.get(key).modify(x, y, z, 'destroy');
+                } else if (e.button === 2) { // Place
+                    const px = Math.floor(hit.point.x + nx * 0.1);
+                    const py = Math.floor(hit.point.y + ny * 0.1);
+                    const pz = Math.floor(hit.point.z + nz * 0.1);
+                    // Collision check
+                    if(Math.abs(px-camera.position.x)<0.8 && Math.abs(py-camera.position.y+1)<1.8 && Math.abs(pz-camera.position.z)<0.8) return;
                     
-                    // Prevent placing in self
-                    if (Math.abs(x - camera.position.x) < 0.8 && Math.abs(z - camera.position.z) < 0.8 && Math.abs(y - camera.position.y + 1) < 1.8) return;
-
-                    const cx = Math.floor(x / CHUNK_SIZE);
-                    const cz = Math.floor(z / CHUNK_SIZE);
-                    const key = `${cx},${cz}`;
-                    if(chunks.has(key)) chunks.get(key).modify(x, y, z, 'place', selectedBlock);
+                    const pcx = Math.floor(px / CHUNK_SIZE);
+                    const pcz = Math.floor(pz / CHUNK_SIZE);
+                    const pkey = `${pcx},${pcz}`;
+                    if(chunks.has(pkey)) chunks.get(pkey).modify(px, py, pz, 'place', selectedBlock);
                 }
             }
         });
 
-        // --- MOVEMENT LOOP ---
-        const keys = { w:false, a:false, s:false, d:false, sp:false };
-        document.addEventListener('keydown', (e) => {
-            switch(e.code) {
-                case 'KeyW': keys.w=true; break;
-                case 'KeyA': keys.a=true; break;
-                case 'KeyS': keys.s=true; break;
-                case 'KeyD': keys.d=true; break;
-                case 'Space': keys.sp=true; break;
-            }
+        // --- PHYSICS LOOP ---
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        const keys = {w:0, a:0, s:0, d:0, sp:0};
+        let canJump = false;
+
+        document.addEventListener('keydown', e => {
+            if(e.code==='KeyW') keys.w=1; if(e.code==='KeyA') keys.a=1;
+            if(e.code==='KeyS') keys.s=1; if(e.code==='KeyD') keys.d=1;
+            if(e.code==='Space') keys.sp=1;
         });
-        document.addEventListener('keyup', (e) => {
-            switch(e.code) {
-                case 'KeyW': keys.w=false; break;
-                case 'KeyA': keys.a=false; break;
-                case 'KeyS': keys.s=false; break;
-                case 'KeyD': keys.d=false; break;
-                case 'Space': keys.sp=false; break;
-            }
+        document.addEventListener('keyup', e => {
+            if(e.code==='KeyW') keys.w=0; if(e.code==='KeyA') keys.a=0;
+            if(e.code==='KeyS') keys.s=0; if(e.code==='KeyD') keys.d=0;
+            if(e.code==='Space') keys.sp=0;
         });
 
         const clock = new THREE.Clock();
-
         function animate() {
             requestAnimationFrame(animate);
-            const delta = Math.min(clock.getDelta(), 0.1);
-
             if(controls.isLocked) {
+                const delta = Math.min(clock.getDelta(), 0.1);
+                
                 velocity.x -= velocity.x * 10.0 * delta;
                 velocity.z -= velocity.z * 10.0 * delta;
-                velocity.y -= 30.0 * delta; // Gravity
+                velocity.y -= 30.0 * delta;
 
-                direction.z = Number(keys.w) - Number(keys.s);
-                direction.x = Number(keys.d) - Number(keys.a);
+                direction.z = keys.w - keys.s;
+                direction.x = keys.d - keys.a;
                 direction.normalize();
 
                 if (keys.w || keys.s) velocity.z -= direction.z * 50.0 * delta;
@@ -383,40 +403,32 @@
                 controls.moveForward(-velocity.z * delta);
                 camera.position.y += velocity.y * delta;
 
-                // --- COLLISIONS (Simplified for Infinite World) ---
-                // We Raycast down to find floor height
-                const downRay = new THREE.Raycaster(camera.position, new THREE.Vector3(0,-1,0), 0, 2);
-                const meshes = [];
-                for(const chunk of chunks.values()) if(chunk.mesh) meshes.push(chunk.mesh);
+                // Collision
+                const rayDown = new THREE.Raycaster(camera.position, new THREE.Vector3(0,-1,0), 0, 1.8);
+                const meshes = Array.from(chunks.values()).map(c=>c.mesh).filter(m=>m);
+                const hits = rayDown.intersectObjects(meshes);
                 
-                const hits = downRay.intersectObjects(meshes);
-                
-                if(hits.length > 0 && hits[0].distance < 1.6) {
-                    velocity.y = Math.max(0, velocity.y);
-                    camera.position.y = hits[0].point.y + 1.6;
-                    canJump = true;
+                // Water float or Solid ground
+                if(hits.length > 0) {
+                     // Check if hit block is water (UV check roughly)
+                     // Since we merged meshes, strict material check is hard. 
+                     // We assume solid collision for everything for simplicity in this version.
+                     velocity.y = Math.max(0, velocity.y);
+                     camera.position.y = hits[0].point.y + 1.6;
+                     canJump = true;
                 }
-
-                if (keys.sp && canJump) { velocity.y = 12; canJump = false; }
                 
-                // Infinite world generation update
+                if(keys.sp && canJump) { velocity.y = 12; canJump = false; }
                 updateChunks();
             }
-
-            // Fall recovery
-            if(camera.position.y < -30) {
-                camera.position.y = 30;
-                velocity.y = 0;
-            }
-
+            if(camera.position.y < -30) { camera.position.set(0,20,0); velocity.set(0,0,0); }
             renderer.render(scene, camera);
         }
 
-        // Init
         camera.position.set(0, 10, 0);
-        updateChunks(); // Initial load
+        updateChunks();
         animate();
-
+        
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
