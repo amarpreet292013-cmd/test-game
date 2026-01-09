@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Minecraft: Safe Start</title>
+    <title>Minecraft: Physics Sandbox</title>
     <style>
         body { margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; user-select: none; }
         
@@ -17,58 +17,21 @@
         #hud {
             position: absolute; bottom: 20px; left: 20px;
             color: white; text-shadow: 2px 2px 0 #000;
-        }
-        
-        #health-bar {
-            width: 200px; height: 20px;
-            background: #333; border: 2px solid white;
-            margin-bottom: 10px;
-        }
-        
-        #health-fill {
-            width: 100%; height: 100%;
-            background: #ff3333;
-            transition: width 0.2s;
+            background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px;
         }
 
-        #timer {
-            position: absolute; top: 20px; right: 20px;
-            font-size: 24px; color: yellow; font-weight: bold;
-            text-shadow: 2px 2px 0 #000;
-        }
-
-        #status {
-            position: absolute; top: 10%; left: 50%; transform: translateX(-50%);
-            font-size: 24px; color: cyan; font-weight: bold; text-shadow: 2px 2px 0 #000;
-        }
-
-        #death-screen {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(100, 0, 0, 0.9);
-            display: none; flex-direction: column;
-            justify-content: center; align-items: center;
-            color: white; z-index: 20;
-        }
-        
-        button {
-            padding: 15px 30px; font-size: 20px; cursor: pointer;
-            background: white; border: none; font-weight: bold; margin-top: 20px;
-        }
+        #block-name { font-weight: bold; color: yellow; }
     </style>
 </head>
 <body>
     <div id="crosshair"></div>
-    <div id="timer">Time: 0s</div>
-    <div id="status">SAFE MODE: 5s</div>
     
     <div id="hud">
-        <div id="health-bar"><div id="health-fill"></div></div>
-        <div>WASD = Move | Click = Mine/Build | E = Spawn Enemy</div>
-    </div>
-
-    <div id="death-screen">
-        <h1>YOU DIED</h1>
-        <button onclick="location.reload()">Respawn</button>
+        <div id="info">Selected: <span id="block-name">Grass</span></div>
+        <div>WASD = Move | Space = Jump</div>
+        <div>L-Click = Mine | R-Click = Place</div>
+        <div><b>Q = Throw Physics Block</b></div>
+        <div>Keys 1-5 = Change Block</div>
     </div>
 
     <script type="importmap">
@@ -85,15 +48,14 @@
         import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
         // --- CONFIGURATION ---
-        const DOOM_TIMER = 600; // 10 minutes
-        const WORLD_SIZE = 60; 
-        const GRAVITY = 30;
-        const JUMP_FORCE = 12;
+        const WORLD_SIZE = 50; 
+        const GRAVITY = 25;
+        const JUMP_FORCE = 10;
         
         // --- SETUP ---
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x87CEEB);
-        scene.fog = new THREE.Fog(0x87CEEB, 20, 80);
+        scene.fog = new THREE.Fog(0x87CEEB, 20, 60);
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -102,7 +64,7 @@
         document.body.appendChild(renderer.domElement);
 
         // Lights
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
         scene.add(ambientLight);
         const sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
         sunLight.position.set(50, 80, 30);
@@ -110,161 +72,243 @@
         scene.add(sunLight);
 
         // --- TEXTURES ---
-        function getTexture(color, noise = 0.1) {
+        function getTexture(color, type='solid') {
             const canvas = document.createElement('canvas');
             canvas.width = 64; canvas.height = 64;
             const ctx = canvas.getContext('2d');
             ctx.fillStyle = color;
             ctx.fillRect(0,0,64,64);
-            for(let i=0; i<300; i++) {
-                ctx.fillStyle = `rgba(0,0,0,${Math.random() * noise})`;
+            
+            // Noise
+            for(let i=0; i<400; i++) {
+                ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.15})`;
                 ctx.fillRect(Math.random()*64, Math.random()*64, 2, 2);
             }
+            // Bricks pattern
+            if(type === 'brick') {
+                ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(0, 32); ctx.lineTo(64, 32);
+                ctx.moveTo(32, 0); ctx.lineTo(32, 32);
+                ctx.stroke();
+            }
+
             const tex = new THREE.CanvasTexture(canvas);
             tex.magFilter = THREE.NearestFilter;
             return tex;
         }
 
-        const matDirt = new THREE.MeshStandardMaterial({ map: getTexture('#5d4037') });
-        const matGrass = new THREE.MeshStandardMaterial({ map: getTexture('#4caf50'), color: 0x88cc88 });
-        const matStone = new THREE.MeshStandardMaterial({ map: getTexture('#757575') });
-        const matSafe = new THREE.MeshStandardMaterial({ color: 0xFFD700 }); // Gold Platform
-
-        // --- WORLD GENERATION ---
-        const geometry = new THREE.BoxGeometry(1, 1, 1);
-        const dummy = new THREE.Object3D();
-        const MAX_BLOCKS = WORLD_SIZE * WORLD_SIZE * 5; 
-        
-        const meshes = {
-            dirt: new THREE.InstancedMesh(geometry, matDirt, MAX_BLOCKS),
-            grass: new THREE.InstancedMesh(geometry, matGrass, MAX_BLOCKS),
-            stone: new THREE.InstancedMesh(geometry, matStone, MAX_BLOCKS)
+        const materials = {
+            grass: new THREE.MeshStandardMaterial({ map: getTexture('#4caf50') }),
+            dirt: new THREE.MeshStandardMaterial({ map: getTexture('#5d4037') }),
+            stone: new THREE.MeshStandardMaterial({ map: getTexture('#757575') }),
+            wood: new THREE.MeshStandardMaterial({ map: getTexture('#3e2723') }),
+            sand: new THREE.MeshStandardMaterial({ map: getTexture('#fdd835') }),
         };
 
-        for (const key in meshes) {
+        const materialKeys = ['grass', 'dirt', 'stone', 'wood', 'sand'];
+        let currentMatIndex = 0;
+
+        // --- WORLD GENERATION (Instanced) ---
+        const geometry = new THREE.BoxGeometry(1, 1, 1);
+        const dummy = new THREE.Object3D();
+        const MAX_BLOCKS = WORLD_SIZE * WORLD_SIZE * 8; 
+        
+        // We need a map to store the InstancedMeshes
+        const meshes = {};
+        for(let key in materials) {
+            meshes[key] = new THREE.InstancedMesh(geometry, materials[key], MAX_BLOCKS);
             meshes[key].castShadow = true;
             meshes[key].receiveShadow = true;
-            scene.add(meshes[key]);
             meshes[key].count = 0;
+            scene.add(meshes[key]);
         }
 
-        const blocks = []; 
+        // Logic Grid (Simple Map for collision)
+        // Format: "x,y,z" -> { type: 'grass' }
+        const worldMap = new Map();
+
         function placeBlock(x, y, z, type) {
+            const key = `${x},${y},${z}`;
+            if(worldMap.has(key)) return; // Already exists
+
             const mesh = meshes[type];
             dummy.position.set(x, y, z);
             dummy.updateMatrix();
             mesh.setMatrixAt(mesh.count, dummy.matrix);
-            blocks.push({ x, y, z, type, instanceId: mesh.count, mesh: mesh });
+            
+            // Store logical data
+            worldMap.set(key, { 
+                type: type, 
+                instanceId: mesh.count,
+                x: x, y: y, z: z
+            });
+
             mesh.count++;
             mesh.instanceMatrix.needsUpdate = true;
         }
 
-        // Generate Terrain
+        function removeBlock(x, y, z) {
+            const key = `${x},${y},${z}`;
+            const block = worldMap.get(key);
+            if(!block) return;
+
+            const mesh = meshes[block.type];
+            
+            // To "remove" in InstancedMesh, we swap with the last one or set scale to 0
+            // Setting scale to 0 is easier for this demo
+            const matrix = new THREE.Matrix4();
+            mesh.getMatrixAt(block.instanceId, matrix);
+            matrix.elements[0] = 0; // Scale X = 0
+            matrix.elements[5] = 0; // Scale Y = 0
+            matrix.elements[10] = 0; // Scale Z = 0
+            mesh.setMatrixAt(block.instanceId, matrix);
+            mesh.instanceMatrix.needsUpdate = true;
+
+            worldMap.delete(key);
+        }
+
+        console.log("Generating Terrain...");
         for (let x = -WORLD_SIZE/2; x < WORLD_SIZE/2; x++) {
             for (let z = -WORLD_SIZE/2; z < WORLD_SIZE/2; z++) {
-                const h = Math.floor(Math.sin(x/10) * 3 + Math.cos(z/10) * 3);
+                const h = Math.floor(Math.sin(x/12) * 4 + Math.cos(z/12) * 4);
+                
                 placeBlock(x, h, z, 'grass');
                 placeBlock(x, h-1, z, 'dirt');
-                placeBlock(x, h-2, z, 'dirt');
-                placeBlock(x, h-3, z, 'stone');
+                placeBlock(x, h-2, z, 'stone');
+
+                // Trees
+                if(x % 10 === 0 && z % 10 === 0 && h > -2) {
+                    placeBlock(x, h+1, z, 'wood');
+                    placeBlock(x, h+2, z, 'wood');
+                    placeBlock(x, h+3, z, 'grass'); // Leaves (Green block)
+                }
             }
         }
 
-        // --- SAFE START PLATFORM ---
-        // Creates a 3x3 Gold Platform at (0, 10, 0)
-        const platformBlocks = [];
-        for(let x=-1; x<=1; x++) {
-            for(let z=-1; z<=1; z++) {
-                const p = new THREE.Mesh(geometry, matSafe);
-                p.position.set(x, 9, z); // Just under feet
-                scene.add(p);
-                blocks.push({x:x, y:9, z:z, mesh:p, isStandalone:true});
-                platformBlocks.push(p);
-            }
-        }
-
-        // --- ENEMIES ---
-        const enemies = [];
-        const enemyGeo = new THREE.BoxGeometry(0.8, 1.8, 0.8);
-        const enemyMat = new THREE.MeshStandardMaterial({ color: 0x44aa44 }); 
-        const fireballGeo = new THREE.SphereGeometry(0.4, 8, 8);
-        const fireballMat = new THREE.MeshBasicMaterial({ color: 0xff4500 });
-        const fireballs = [];
-
-        function spawnEnemy(x, y, z) {
-            const enemy = new THREE.Mesh(enemyGeo, enemyMat);
-            enemy.position.set(x, y, z);
-            enemy.castShadow = true;
-            scene.add(enemy);
-            enemies.push({ mesh: enemy, lastShot: 0 });
-        }
+        // --- PHYSICS OBJECTS (Thrown Blocks) ---
+        const physicsObjects = [];
         
-        // Spawn far away!
-        spawnEnemy(20, 5, 20);
-        spawnEnemy(-20, 5, -20);
-        spawnEnemy(20, 5, -20);
+        function spawnPhysicsBlock(pos, dir, type) {
+            const mesh = new THREE.Mesh(geometry, materials[type]);
+            mesh.position.copy(pos);
+            mesh.scale.set(0.5, 0.5, 0.5); // Slightly smaller
+            mesh.castShadow = true;
+            scene.add(mesh);
 
-        // --- PLAYER CONTROLS ---
+            physicsObjects.push({
+                mesh: mesh,
+                velocity: dir.multiplyScalar(15), // Throw force
+                rotVel: new THREE.Vector3(Math.random(), Math.random(), Math.random()),
+                onGround: false,
+                isSand: type === 'sand'
+            });
+        }
+
+        // --- CONTROLS ---
         const controls = new PointerLockControls(camera, document.body);
+        document.addEventListener('click', () => controls.lock());
+
+        const keys = { w:false, a:false, s:false, d:false, sp:false };
+        document.addEventListener('keydown', (e) => {
+            switch(e.code) {
+                case 'KeyW': keys.w=true; break;
+                case 'KeyA': keys.a=true; break;
+                case 'KeyS': keys.s=true; break;
+                case 'KeyD': keys.d=true; break;
+                case 'Space': keys.sp=true; break;
+                case 'KeyQ': 
+                    // THROW BLOCK
+                    if(controls.isLocked) {
+                        const dir = new THREE.Vector3();
+                        camera.getWorldDirection(dir);
+                        spawnPhysicsBlock(camera.position, dir, materialKeys[currentMatIndex]);
+                    }
+                    break;
+            }
+            // Block Selection
+            if(e.key >= '1' && e.key <= '5') {
+                currentMatIndex = parseInt(e.key) - 1;
+                const name = materialKeys[currentMatIndex];
+                document.getElementById('block-name').innerText = name.charAt(0).toUpperCase() + name.slice(1);
+                document.getElementById('block-name').style.color = name === 'sand' ? 'orange' : 'yellow';
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            switch(e.code) {
+                case 'KeyW': keys.w=false; break;
+                case 'KeyA': keys.a=false; break;
+                case 'KeyS': keys.s=false; break;
+                case 'KeyD': keys.d=false; break;
+                case 'Space': keys.sp=false; break;
+            }
+        });
+
+        // --- INTERACTION ---
+        const raycaster = new THREE.Raycaster();
+        const center = new THREE.Vector2(0,0);
+
+        document.addEventListener('mousedown', (e) => {
+            if(!controls.isLocked) return;
+
+            raycaster.setFromCamera(center, camera);
+            // Get all InstancedMeshes
+            const targets = Object.values(meshes);
+            const intersections = raycaster.intersectObjects(targets);
+            
+            if(intersections.length > 0 && intersections[0].distance < 6) {
+                const hit = intersections[0];
+                const x = Math.round(hit.point.x - hit.face.normal.x * 0.1);
+                const y = Math.round(hit.point.y - hit.face.normal.y * 0.1);
+                const z = Math.round(hit.point.z - hit.face.normal.z * 0.1);
+
+                if(e.button === 0) {
+                    // Mine
+                    removeBlock(x, y, z);
+                    // Spawn particle debris (Physics object)
+                    const dir = new THREE.Vector3(Math.random()-0.5, 1, Math.random()-0.5).normalize();
+                    spawnPhysicsBlock(new THREE.Vector3(x,y,z), dir, 'dirt');
+
+                } else if (e.button === 2) {
+                    // Place
+                    const nx = Math.round(hit.point.x + hit.face.normal.x * 0.1);
+                    const ny = Math.round(hit.point.y + hit.face.normal.y * 0.1);
+                    const nz = Math.round(hit.point.z + hit.face.normal.z * 0.1);
+                    
+                    // Don't place inside player
+                    if(new THREE.Vector3(nx,ny,nz).distanceTo(camera.position) > 1.5) {
+                        const type = materialKeys[currentMatIndex];
+                        
+                        if(type === 'sand') {
+                            // Sand Physics: If placed in air, it becomes a physics object immediately
+                            const belowKey = `${nx},${ny-1},${nz}`;
+                            if(!worldMap.has(belowKey)) {
+                                spawnPhysicsBlock(new THREE.Vector3(nx,ny,nz), new THREE.Vector3(0,0,0), 'sand');
+                            } else {
+                                placeBlock(nx, ny, nz, type);
+                            }
+                        } else {
+                            placeBlock(nx, ny, nz, type);
+                        }
+                    }
+                }
+            }
+        });
+
+        // --- MAIN LOOP ---
         const velocity = new THREE.Vector3();
         const direction = new THREE.Vector3();
         let canJump = false;
-        let health = 100;
-        let gameTime = 0;
-        let isInvincible = true;
-        
-        // Initial Position
-        camera.position.set(0, 11, 0); 
-
-        document.addEventListener('click', () => {
-            if(health > 0) controls.lock();
-        });
-
-        // --- GAME LOGIC ---
-        const keys = { w:false, a:false, s:false, d:false, sp:false };
-        document.addEventListener('keydown', (e) => {
-            if (e.code === 'KeyW') keys.w = true;
-            if (e.code === 'KeyA') keys.a = true;
-            if (e.code === 'KeyS') keys.s = true;
-            if (e.code === 'KeyD') keys.d = true;
-            if (e.code === 'Space') keys.sp = true;
-        });
-        document.addEventListener('keyup', (e) => {
-            if (e.code === 'KeyW') keys.w = false;
-            if (e.code === 'KeyA') keys.a = false;
-            if (e.code === 'KeyS') keys.s = false;
-            if (e.code === 'KeyD') keys.d = false;
-            if (e.code === 'Space') keys.sp = false;
-        });
-
         const clock = new THREE.Clock();
 
         function animate() {
             requestAnimationFrame(animate);
             const delta = Math.min(clock.getDelta(), 0.1);
 
-            // Only run game logic if player clicked start
-            if (controls.isLocked) {
-                gameTime += delta;
-                
-                // Invincibility Logic
-                if(gameTime < 5) {
-                    document.getElementById('status').innerText = `SAFE MODE: ${(5-gameTime).toFixed(1)}s`;
-                } else {
-                     if(isInvincible) {
-                         isInvincible = false;
-                         document.getElementById('status').style.display = 'none';
-                         // Remove platform
-                         platformBlocks.forEach(b => {
-                             scene.remove(b);
-                             // Remove from logic array roughly
-                             const idx = blocks.findIndex(bl => bl.mesh === b);
-                             if(idx > -1) blocks.splice(idx, 1);
-                         });
-                     }
-                }
-
-                // Physics
+            if(controls.isLocked) {
+                // 1. Player Physics
                 velocity.x -= velocity.x * 10.0 * delta;
                 velocity.z -= velocity.z * 10.0 * delta;
                 velocity.y -= GRAVITY * delta;
@@ -280,90 +324,86 @@
                 controls.moveForward(-velocity.z * delta);
                 camera.position.y += velocity.y * delta;
 
-                // Collision
-                if (camera.position.y < -10) { 
-                    camera.position.set(0, 15, 0); // Respawn if fall in void
+                // Simple Ground Collision
+                if(camera.position.y < -20) {
+                    camera.position.set(0, 20, 0);
                     velocity.y = 0;
                 }
-                
-                const downRay = new THREE.Raycaster(camera.position, new THREE.Vector3(0,-1,0), 0, 2.0);
-                // Check all meshes including platform
-                const allMeshes = Object.values(meshes).map(m=>m);
-                platformBlocks.forEach(p => allMeshes.push(p));
 
-                const groundHits = downRay.intersectObjects(allMeshes);
-                if(groundHits.length > 0) {
-                     // Verify instance
-                     let valid = true;
-                     if(groundHits[0].object.isInstancedMesh) {
-                         const m = new THREE.Matrix4();
-                         groundHits[0].object.getMatrixAt(groundHits[0].instanceId, m);
-                         if(m.elements[0] === 0) valid = false;
-                     }
-                     if(valid) {
-                        velocity.y = Math.max(0, velocity.y);
-                        canJump = true;
-                     }
+                const px = Math.round(camera.position.x);
+                const py = Math.round(camera.position.y - 1.6); // Feet
+                const pz = Math.round(camera.position.z);
+
+                // Check block at feet
+                if(worldMap.has(`${px},${py},${pz}`)) {
+                    velocity.y = Math.max(0, velocity.y);
+                    camera.position.y = py + 1.6 + 0.5; // Snap up
+                    canJump = true;
                 }
 
                 if (keys.sp && canJump) { velocity.y = JUMP_FORCE; canJump = false; }
-                
-                // --- ENEMY LOGIC ---
-                if(!isInvincible) {
-                    enemies.forEach(enemy => {
-                        const dist = camera.position.distanceTo(enemy.mesh.position);
-                        
-                        // Move
-                        if(dist < 30) {
-                            const dir = new THREE.Vector3().subVectors(camera.position, enemy.mesh.position).normalize();
-                            enemy.mesh.position.add(dir.multiplyScalar(4 * delta)); // Speed 4
-                            enemy.mesh.lookAt(camera.position.x, enemy.mesh.position.y, camera.position.z);
-                        }
-                        
-                        // Shoot (Hot Balls)
-                        if (gameTime > DOOM_TIMER && dist < 30 && gameTime - enemy.lastShot > 2) {
-                             const ball = new THREE.Mesh(fireballGeo, fireballMat);
-                             ball.position.copy(enemy.mesh.position);
-                             const dir = new THREE.Vector3().subVectors(camera.position, enemy.mesh.position).normalize();
-                             scene.add(ball);
-                             fireballs.push({ mesh: ball, velocity: dir.multiplyScalar(15) });
-                             enemy.lastShot = gameTime;
-                        }
+            }
 
-                        // Melee
-                        if(dist < 1.5) {
-                            health -= 1;
-                            document.getElementById('health-fill').style.width = health + '%';
-                        }
-                    });
-                }
+            // 2. Object Physics Loop (Bounce & Gravity)
+            for(let i=physicsObjects.length-1; i>=0; i--) {
+                const obj = physicsObjects[i];
                 
-                // Fireballs
-                for(let i=fireballs.length-1; i>=0; i--) {
-                    const fb = fireballs[i];
-                    fb.mesh.position.add(fb.velocity.clone().multiplyScalar(delta));
-                    if(fb.mesh.position.distanceTo(camera.position) < 1.5) {
-                        health -= 10;
-                        document.getElementById('health-fill').style.width = health + '%';
-                        scene.remove(fb.mesh);
-                        fireballs.splice(i, 1);
-                    } else if(fb.mesh.position.distanceTo(camera.position) > 50) {
-                        scene.remove(fb.mesh);
-                        fireballs.splice(i, 1);
+                // Gravity
+                obj.velocity.y -= GRAVITY * delta;
+                
+                // Move
+                const oldPos = obj.mesh.position.clone();
+                obj.mesh.position.add(obj.velocity.clone().multiplyScalar(delta));
+                
+                // Rotate
+                if(!obj.onGround) {
+                    obj.mesh.rotation.x += obj.rotVel.x * 5 * delta;
+                    obj.mesh.rotation.y += obj.rotVel.y * 5 * delta;
+                }
+
+                // Collision with World Grid
+                const checkX = Math.round(obj.mesh.position.x);
+                const checkY = Math.round(obj.mesh.position.y - 0.25); // Bottom of cube
+                const checkZ = Math.round(obj.mesh.position.z);
+                
+                if(worldMap.has(`${checkX},${checkY},${checkZ}`)) {
+                    // Hit ground
+                    obj.mesh.position.y = checkY + 1; // Snap to top of block
+                    
+                    if(obj.velocity.y < -2) {
+                        // Bounce
+                        obj.velocity.y = -obj.velocity.y * 0.5; 
+                        obj.velocity.x *= 0.6; // Friction
+                        obj.velocity.z *= 0.6;
+                    } else {
+                        // Stop
+                        obj.velocity.set(0,0,0);
+                        obj.onGround = true;
+                        
+                        // If it's sand and stopped, turn it into a real block!
+                        if(obj.isSand) {
+                            placeBlock(checkX, checkY+1, checkZ, 'sand');
+                            scene.remove(obj.mesh);
+                            physicsObjects.splice(i, 1);
+                            continue;
+                        }
                     }
+                } else {
+                    obj.onGround = false;
+                }
+
+                // Cleanup falling off world
+                if(obj.mesh.position.y < -30) {
+                    scene.remove(obj.mesh);
+                    physicsObjects.splice(i, 1);
                 }
             }
 
-            // Death Check
-            if(health <= 0) {
-                document.getElementById('death-screen').style.display = 'flex';
-                controls.unlock();
-            }
-            
-            document.getElementById('timer').innerText = `Time: ${Math.floor(gameTime)}s`;
             renderer.render(scene, camera);
         }
 
+        // Init
+        camera.position.set(0, 10, 0);
         animate();
 
         window.addEventListener('resize', () => {
