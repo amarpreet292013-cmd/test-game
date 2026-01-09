@@ -2,11 +2,10 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Minecraft: Fireball Survival</title>
+    <title>Minecraft: Safe Start</title>
     <style>
         body { margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; user-select: none; }
         
-        /* UI OVERLAY */
         #crosshair {
             position: absolute; top: 50%; left: 50%;
             width: 20px; height: 20px;
@@ -38,14 +37,10 @@
             text-shadow: 2px 2px 0 #000;
         }
 
-        #warning {
-            position: absolute; top: 20%; left: 50%; transform: translateX(-50%);
-            font-size: 40px; color: red; font-weight: bold;
-            text-shadow: 3px 3px 0 #000; display: none;
-            animation: blink 1s infinite;
+        #status {
+            position: absolute; top: 10%; left: 50%; transform: translateX(-50%);
+            font-size: 24px; color: cyan; font-weight: bold; text-shadow: 2px 2px 0 #000;
         }
-
-        @keyframes blink { 50% { opacity: 0; } }
 
         #death-screen {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -64,17 +59,15 @@
 <body>
     <div id="crosshair"></div>
     <div id="timer">Time: 0s</div>
-    <div id="warning">⚠️ THE HORDE IS ANGRY! ⚠️</div>
+    <div id="status">SAFE MODE: 5s</div>
     
     <div id="hud">
         <div id="health-bar"><div id="health-fill"></div></div>
-        <div id="info">Current Block: <span id="block-name">Dirt</span></div>
         <div>WASD = Move | Click = Mine/Build | E = Spawn Enemy</div>
     </div>
 
     <div id="death-screen">
         <h1>YOU DIED</h1>
-        <p>Killed by a Hot Ball</p>
         <button onclick="location.reload()">Respawn</button>
     </div>
 
@@ -92,7 +85,7 @@
         import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
         // --- CONFIGURATION ---
-        const TIME_UNTIL_DOOM = 600; // SECONDS (10 Minutes). CHANGE THIS TO 10 TO TEST FAST!
+        const DOOM_TIMER = 600; // 10 minutes
         const WORLD_SIZE = 60; 
         const GRAVITY = 30;
         const JUMP_FORCE = 12;
@@ -111,7 +104,6 @@
         // Lights
         const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
         scene.add(ambientLight);
-        
         const sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
         sunLight.position.set(50, 80, 30);
         sunLight.castShadow = true;
@@ -136,10 +128,9 @@
         const matDirt = new THREE.MeshStandardMaterial({ map: getTexture('#5d4037') });
         const matGrass = new THREE.MeshStandardMaterial({ map: getTexture('#4caf50'), color: 0x88cc88 });
         const matStone = new THREE.MeshStandardMaterial({ map: getTexture('#757575') });
-        const matWood = new THREE.MeshStandardMaterial({ map: getTexture('#3e2723') });
-        const matLeaf = new THREE.MeshStandardMaterial({ map: getTexture('#2e7d32'), transparent:true, opacity:0.9 });
-        
-        // --- WORLD GENERATION (Instanced) ---
+        const matSafe = new THREE.MeshStandardMaterial({ color: 0xFFD700 }); // Gold Platform
+
+        // --- WORLD GENERATION ---
         const geometry = new THREE.BoxGeometry(1, 1, 1);
         const dummy = new THREE.Object3D();
         const MAX_BLOCKS = WORLD_SIZE * WORLD_SIZE * 5; 
@@ -147,9 +138,7 @@
         const meshes = {
             dirt: new THREE.InstancedMesh(geometry, matDirt, MAX_BLOCKS),
             grass: new THREE.InstancedMesh(geometry, matGrass, MAX_BLOCKS),
-            stone: new THREE.InstancedMesh(geometry, matStone, MAX_BLOCKS),
-            wood: new THREE.InstancedMesh(geometry, matWood, MAX_BLOCKS),
-            leaf: new THREE.InstancedMesh(geometry, matLeaf, MAX_BLOCKS)
+            stone: new THREE.InstancedMesh(geometry, matStone, MAX_BLOCKS)
         };
 
         for (const key in meshes) {
@@ -170,7 +159,7 @@
             mesh.instanceMatrix.needsUpdate = true;
         }
 
-        console.log("Generating World...");
+        // Generate Terrain
         for (let x = -WORLD_SIZE/2; x < WORLD_SIZE/2; x++) {
             for (let z = -WORLD_SIZE/2; z < WORLD_SIZE/2; z++) {
                 const h = Math.floor(Math.sin(x/10) * 3 + Math.cos(z/10) * 3);
@@ -178,110 +167,60 @@
                 placeBlock(x, h-1, z, 'dirt');
                 placeBlock(x, h-2, z, 'dirt');
                 placeBlock(x, h-3, z, 'stone');
-                
-                if (x % 7 === 0 && z % 7 === 0 && Math.random() > 0.2) {
-                    placeBlock(x, h+1, z, 'wood');
-                    placeBlock(x, h+2, z, 'wood');
-                    placeBlock(x, h+3, z, 'wood');
-                    for(let lx=x-1; lx<=x+1; lx++) {
-                        for(let lz=z-1; lz<=z+1; lz++) {
-                            if(lx!==x || lz!==z) placeBlock(lx, h+3, lz, 'leaf');
-                        }
-                    }
-                    placeBlock(x, h+4, z, 'leaf');
-                }
             }
         }
 
-        // --- PLAYER & PHYSICS ---
-        const controls = new PointerLockControls(camera, document.body);
-        const playerVelocity = new THREE.Vector3();
-        const playerDirection = new THREE.Vector3();
-        let canJump = false;
-        let playerHealth = 100;
-        let gameTime = 0;
-        let doomTriggered = false;
-        
-        document.addEventListener('click', () => {
-            if(playerHealth > 0) controls.lock();
-        });
+        // --- SAFE START PLATFORM ---
+        // Creates a 3x3 Gold Platform at (0, 10, 0)
+        const platformBlocks = [];
+        for(let x=-1; x<=1; x++) {
+            for(let z=-1; z<=1; z++) {
+                const p = new THREE.Mesh(geometry, matSafe);
+                p.position.set(x, 9, z); // Just under feet
+                scene.add(p);
+                blocks.push({x:x, y:9, z:z, mesh:p, isStandalone:true});
+                platformBlocks.push(p);
+            }
+        }
 
-        // --- ENEMIES & FIREBALLS ---
+        // --- ENEMIES ---
         const enemies = [];
-        const fireballs = [];
-        
         const enemyGeo = new THREE.BoxGeometry(0.8, 1.8, 0.8);
         const enemyMat = new THREE.MeshStandardMaterial({ color: 0x44aa44 }); 
-        
-        // Fireball Assets
         const fireballGeo = new THREE.SphereGeometry(0.4, 8, 8);
-        const fireballMat = new THREE.MeshBasicMaterial({ color: 0xff4500 }); // Orange-Red
-        
+        const fireballMat = new THREE.MeshBasicMaterial({ color: 0xff4500 });
+        const fireballs = [];
+
         function spawnEnemy(x, y, z) {
             const enemy = new THREE.Mesh(enemyGeo, enemyMat);
             enemy.position.set(x, y, z);
             enemy.castShadow = true;
             scene.add(enemy);
-            enemies.push({ 
-                mesh: enemy, 
-                lastShot: 0 // Track when they last shot
-            });
+            enemies.push({ mesh: enemy, lastShot: 0 });
         }
-        spawnEnemy(5, 5, 5);
-        spawnEnemy(-5, 5, -5);
-
-        function shootFireball(startPos, targetPos) {
-            const ball = new THREE.Mesh(fireballGeo, fireballMat);
-            ball.position.copy(startPos);
-            
-            // Calculate direction toward player
-            const dir = new THREE.Vector3().subVectors(targetPos, startPos).normalize();
-            
-            scene.add(ball);
-            fireballs.push({ mesh: ball, velocity: dir.multiplyScalar(15) }); // Speed 15
-        }
-
-        // --- INTERACTION ---
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2(0,0);
-        let selectedBlock = null;
-
-        const selectionBox = new THREE.LineSegments(
-            new THREE.EdgesGeometry(new THREE.BoxGeometry(1.01, 1.01, 1.01)),
-            new THREE.LineBasicMaterial({ color: 0x000000 })
-        );
-        scene.add(selectionBox);
-        selectionBox.visible = false;
-
-        document.addEventListener('mousedown', (e) => {
-            if (!controls.isLocked || playerHealth <= 0) return;
-            if (e.button === 0 && selectedBlock) {
-                const matrix = new THREE.Matrix4();
-                selectedBlock.mesh.getMatrixAt(selectedBlock.instanceId, matrix);
-                matrix.elements[0] = 0; 
-                selectedBlock.mesh.setMatrixAt(selectedBlock.instanceId, matrix);
-                selectedBlock.mesh.instanceMatrix.needsUpdate = true;
-                
-                const index = blocks.indexOf(selectedBlock);
-                if(index > -1) blocks.splice(index, 1);
-                
-            } else if (e.button === 2 && selectedBlock) {
-                const normal = selectedBlock.face.normal;
-                const pos = new THREE.Vector3(selectedBlock.x, selectedBlock.y, selectedBlock.z).add(normal);
-                const newBlock = new THREE.Mesh(geometry, matStone);
-                newBlock.position.copy(pos);
-                scene.add(newBlock);
-                blocks.push({ x: pos.x, y: pos.y, z: pos.z, mesh: newBlock, type: 'stone_placed', isStandalone: true });
-            }
-        });
         
-        window.addEventListener('keydown', (e) => {
-            if(e.key.toLowerCase() === 'e' && controls.isLocked) {
-                const spawnPos = camera.position.clone().add(camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(5));
-                spawnEnemy(spawnPos.x, spawnPos.y + 2, spawnPos.z);
-            }
+        // Spawn far away!
+        spawnEnemy(20, 5, 20);
+        spawnEnemy(-20, 5, -20);
+        spawnEnemy(20, 5, -20);
+
+        // --- PLAYER CONTROLS ---
+        const controls = new PointerLockControls(camera, document.body);
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        let canJump = false;
+        let health = 100;
+        let gameTime = 0;
+        let isInvincible = true;
+        
+        // Initial Position
+        camera.position.set(0, 11, 0); 
+
+        document.addEventListener('click', () => {
+            if(health > 0) controls.lock();
         });
 
+        // --- GAME LOGIC ---
         const keys = { w:false, a:false, s:false, d:false, sp:false };
         document.addEventListener('keydown', (e) => {
             if (e.code === 'KeyW') keys.w = true;
@@ -298,135 +237,133 @@
             if (e.code === 'Space') keys.sp = false;
         });
 
-        // --- GAME LOOP ---
         const clock = new THREE.Clock();
-        
+
         function animate() {
             requestAnimationFrame(animate);
             const delta = Math.min(clock.getDelta(), 0.1);
-            gameTime += delta;
-            
-            // Update UI Timer
-            document.getElementById('timer').innerText = `Time: ${Math.floor(gameTime)}s`;
 
-            // Check Doom Logic
-            if(gameTime > TIME_UNTIL_DOOM && !doomTriggered) {
-                doomTriggered = true;
-                document.getElementById('warning').style.display = 'block';
-                // Make scene darker/redder
-                scene.fog.color.setHex(0x550000);
-                scene.background.setHex(0x550000);
-            }
-
+            // Only run game logic if player clicked start
             if (controls.isLocked) {
-                // Physics & Movement
-                playerVelocity.x -= playerVelocity.x * 10.0 * delta;
-                playerVelocity.z -= playerVelocity.z * 10.0 * delta;
-                playerVelocity.y -= GRAVITY * delta;
+                gameTime += delta;
+                
+                // Invincibility Logic
+                if(gameTime < 5) {
+                    document.getElementById('status').innerText = `SAFE MODE: ${(5-gameTime).toFixed(1)}s`;
+                } else {
+                     if(isInvincible) {
+                         isInvincible = false;
+                         document.getElementById('status').style.display = 'none';
+                         // Remove platform
+                         platformBlocks.forEach(b => {
+                             scene.remove(b);
+                             // Remove from logic array roughly
+                             const idx = blocks.findIndex(bl => bl.mesh === b);
+                             if(idx > -1) blocks.splice(idx, 1);
+                         });
+                     }
+                }
 
-                playerDirection.z = Number(keys.w) - Number(keys.s);
-                playerDirection.x = Number(keys.d) - Number(keys.a);
-                playerDirection.normalize();
+                // Physics
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+                velocity.y -= GRAVITY * delta;
 
-                if (keys.w || keys.s) playerVelocity.z -= playerDirection.z * 40.0 * delta;
-                if (keys.a || keys.d) playerVelocity.x -= playerDirection.x * 40.0 * delta;
+                direction.z = Number(keys.w) - Number(keys.s);
+                direction.x = Number(keys.d) - Number(keys.a);
+                direction.normalize();
 
-                controls.moveRight(-playerVelocity.x * delta);
-                controls.moveForward(-playerVelocity.z * delta);
-                camera.position.y += playerVelocity.y * delta;
+                if (keys.w || keys.s) velocity.z -= direction.z * 40.0 * delta;
+                if (keys.a || keys.d) velocity.x -= direction.x * 40.0 * delta;
 
-                // Simple Floor Collision
-                if (camera.position.y < -10) { camera.position.y = 20; playerVelocity.y = 0; }
+                controls.moveRight(-velocity.x * delta);
+                controls.moveForward(-velocity.z * delta);
+                camera.position.y += velocity.y * delta;
+
+                // Collision
+                if (camera.position.y < -10) { 
+                    camera.position.set(0, 15, 0); // Respawn if fall in void
+                    velocity.y = 0;
+                }
+                
                 const downRay = new THREE.Raycaster(camera.position, new THREE.Vector3(0,-1,0), 0, 2.0);
-                const groundHits = downRay.intersectObjects(Object.values(meshes));
+                // Check all meshes including platform
+                const allMeshes = Object.values(meshes).map(m=>m);
+                platformBlocks.forEach(p => allMeshes.push(p));
+
+                const groundHits = downRay.intersectObjects(allMeshes);
                 if(groundHits.length > 0) {
-                     const matrix = new THREE.Matrix4();
-                     groundHits[0].object.getMatrixAt(groundHits[0].instanceId, matrix);
-                     if(matrix.elements[0] !== 0) {
-                        playerVelocity.y = Math.max(0, playerVelocity.y);
+                     // Verify instance
+                     let valid = true;
+                     if(groundHits[0].object.isInstancedMesh) {
+                         const m = new THREE.Matrix4();
+                         groundHits[0].object.getMatrixAt(groundHits[0].instanceId, m);
+                         if(m.elements[0] === 0) valid = false;
+                     }
+                     if(valid) {
+                        velocity.y = Math.max(0, velocity.y);
                         canJump = true;
                      }
                 }
-                if (keys.sp && canJump) { playerVelocity.y = JUMP_FORCE; canJump = false; }
-                
-                // Raycasting for Block Selection
-                raycaster.setFromCamera(mouse, camera);
-                const intersectObjects = Object.values(meshes);
-                blocks.forEach(b => { if(b.isStandalone) intersectObjects.push(b.mesh); });
-                const intersections = raycaster.intersectObjects(intersectObjects);
-                const hit = intersections.find(i => i.distance < 6);
-                
-                if (hit) {
-                    const x = Math.round(hit.point.x - hit.face.normal.x * 0.1);
-                    const y = Math.round(hit.point.y - hit.face.normal.y * 0.1);
-                    const z = Math.round(hit.point.z - hit.face.normal.z * 0.1);
-                    selectionBox.position.set(x, y, z);
-                    selectionBox.visible = true;
-                    selectedBlock = blocks.find(b => Math.abs(b.x - x) < 0.5 && Math.abs(b.y - y) < 0.5 && Math.abs(b.z - z) < 0.5);
-                    if(selectedBlock) selectedBlock.face = hit.face;
-                } else {
-                    selectionBox.visible = false;
-                    selectedBlock = null;
-                }
-            }
-            
-            // --- ENEMY LOGIC (UPDATED) ---
-            enemies.forEach(enemy => {
-                const dist = camera.position.distanceTo(enemy.mesh.position);
-                
-                // Normal chasing
-                if(dist < 20) {
-                    const dir = new THREE.Vector3().subVectors(camera.position, enemy.mesh.position).normalize();
-                    enemy.mesh.position.add(dir.multiplyScalar(3 * delta));
-                    enemy.mesh.lookAt(camera.position.x, enemy.mesh.position.y, camera.position.z);
-                }
 
-                // HOT BALL ATTACK (Only after 10 mins / doomTriggered)
-                if (doomTriggered && dist < 30) {
-                    // Shoot every 2 seconds
-                    if (gameTime - enemy.lastShot > 2) {
-                        shootFireball(enemy.mesh.position, camera.position);
-                        enemy.lastShot = gameTime;
+                if (keys.sp && canJump) { velocity.y = JUMP_FORCE; canJump = false; }
+                
+                // --- ENEMY LOGIC ---
+                if(!isInvincible) {
+                    enemies.forEach(enemy => {
+                        const dist = camera.position.distanceTo(enemy.mesh.position);
+                        
+                        // Move
+                        if(dist < 30) {
+                            const dir = new THREE.Vector3().subVectors(camera.position, enemy.mesh.position).normalize();
+                            enemy.mesh.position.add(dir.multiplyScalar(4 * delta)); // Speed 4
+                            enemy.mesh.lookAt(camera.position.x, enemy.mesh.position.y, camera.position.z);
+                        }
+                        
+                        // Shoot (Hot Balls)
+                        if (gameTime > DOOM_TIMER && dist < 30 && gameTime - enemy.lastShot > 2) {
+                             const ball = new THREE.Mesh(fireballGeo, fireballMat);
+                             ball.position.copy(enemy.mesh.position);
+                             const dir = new THREE.Vector3().subVectors(camera.position, enemy.mesh.position).normalize();
+                             scene.add(ball);
+                             fireballs.push({ mesh: ball, velocity: dir.multiplyScalar(15) });
+                             enemy.lastShot = gameTime;
+                        }
+
+                        // Melee
+                        if(dist < 1.5) {
+                            health -= 1;
+                            document.getElementById('health-fill').style.width = health + '%';
+                        }
+                    });
+                }
+                
+                // Fireballs
+                for(let i=fireballs.length-1; i>=0; i--) {
+                    const fb = fireballs[i];
+                    fb.mesh.position.add(fb.velocity.clone().multiplyScalar(delta));
+                    if(fb.mesh.position.distanceTo(camera.position) < 1.5) {
+                        health -= 10;
+                        document.getElementById('health-fill').style.width = health + '%';
+                        scene.remove(fb.mesh);
+                        fireballs.splice(i, 1);
+                    } else if(fb.mesh.position.distanceTo(camera.position) > 50) {
+                        scene.remove(fb.mesh);
+                        fireballs.splice(i, 1);
                     }
                 }
-                
-                // Melee Damage
-                if(dist < 1.5) {
-                    playerHealth -= 0.5;
-                    document.getElementById('health-fill').style.width = playerHealth + '%';
-                }
-            });
-
-            // --- FIREBALL LOGIC ---
-            for(let i=fireballs.length-1; i>=0; i--) {
-                const fb = fireballs[i];
-                fb.mesh.position.add(fb.velocity.clone().multiplyScalar(delta));
-                
-                // Hit Player Check
-                if(fb.mesh.position.distanceTo(camera.position) < 1.5) {
-                    playerHealth -= 15; // Big Damage!
-                    document.getElementById('health-fill').style.width = playerHealth + '%';
-                    scene.remove(fb.mesh);
-                    fireballs.splice(i, 1);
-                    continue;
-                }
-                
-                // Cleanup if too far or hits ground (simple check)
-                if(fb.mesh.position.distanceTo(camera.position) > 50 || fb.mesh.position.y < -5) {
-                    scene.remove(fb.mesh);
-                    fireballs.splice(i, 1);
-                }
             }
-            
-            if(playerHealth <= 0) {
+
+            // Death Check
+            if(health <= 0) {
                 document.getElementById('death-screen').style.display = 'flex';
                 controls.unlock();
             }
-
+            
+            document.getElementById('timer').innerText = `Time: ${Math.floor(gameTime)}s`;
             renderer.render(scene, camera);
         }
 
-        camera.position.set(0, 10, 0);
         animate();
 
         window.addEventListener('resize', () => {
