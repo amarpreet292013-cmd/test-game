@@ -2,35 +2,39 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>JS Voxel World</title>
+    <title>Single File Minecraft</title>
     <style>
-        body { margin: 0; overflow: hidden; font-family: sans-serif; }
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; font-family: sans-serif; }
         #crosshair {
             position: absolute; top: 50%; left: 50%;
-            width: 20px; height: 20px; border: 2px solid white;
-            border-radius: 50%; transform: translate(-50%, -50%);
-            pointer-events: none;
+            width: 20px; height: 20px;
+            background-color: transparent;
+            border: 2px solid white; border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none; z-index: 10;
         }
         #instructions {
-            position: absolute; top: 10px; left: 10px;
-            color: white; background: rgba(0,0,0,0.5); padding: 10px;
+            position: absolute; top: 10px; left: 10px; color: white;
+            background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px;
+            pointer-events: none;
         }
     </style>
 </head>
 <body>
     <div id="crosshair"></div>
     <div id="instructions">
+        <b>Click to Start</b><br>
         WASD to Move | Space to Jump<br>
-        Left Click: Remove Block | Right Click: Place Block<br>
-        Click screen to start!
+        Left Click: Break Block<br>
+        Right Click: Place Block<br>
+        1-3: Change Color
     </div>
 
     <script type="importmap">
         {
             "imports": {
-                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+                "three": "https://unpkg.com/three@0.150.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.150.0/examples/jsm/"
             }
         }
     </script>
@@ -39,135 +43,184 @@
         import * as THREE from 'three';
         import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
-        // --- Setup Scene ---
+        // --- SETUP ---
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB); // Sky Blue
+        scene.background = new THREE.Color(0x87CEEB); // Sky color
+        scene.fog = new THREE.Fog(0x87CEEB, 10, 50);
+
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({ antialias: false });
+        camera.position.y = 2;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
-        // --- Lighting ---
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        // --- LIGHTING ---
+        const ambientLight = new THREE.AmbientLight(0xcccccc, 0.6);
         scene.add(ambientLight);
-        const sunLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        sunLight.position.set(10, 20, 10);
-        scene.add(sunLight);
 
-        // --- Controls ---
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(10, 20, 10);
+        scene.add(dirLight);
+
+        // --- CONTROLS ---
         const controls = new PointerLockControls(camera, document.body);
-        document.body.addEventListener('click', () => controls.lock());
+        const instructions = document.getElementById('instructions');
+
+        document.body.addEventListener('click', () => {
+            controls.lock();
+        });
+
+        controls.addEventListener('lock', () => {
+            instructions.style.display = 'none';
+        });
+
+        controls.addEventListener('unlock', () => {
+            instructions.style.display = 'block';
+        });
+
+        // --- WORLD GENERATION ---
+        const objects = []; // Stores all blocks for collision/raycasting
+        const geometry = new THREE.BoxGeometry(1, 1, 1);
         
-        const moveState = { forward: false, backward: false, left: false, right: false, jump: false };
-        const velocity = new THREE.Vector3();
-        const direction = new THREE.Vector3();
+        // Materials (Grass, Dirt, Stone)
+        const materials = [
+            new THREE.MeshLambertMaterial({ color: 0x55aa55 }), // Green
+            new THREE.MeshLambertMaterial({ color: 0x885533 }), // Brown
+            new THREE.MeshLambertMaterial({ color: 0x888888 })  // Grey
+        ];
+        let currentMaterialIndex = 0;
 
-        document.addEventListener('keydown', (e) => {
-            if (e.code === 'KeyW') moveState.forward = true;
-            if (e.code === 'KeyS') moveState.backward = true;
-            if (e.code === 'KeyA') moveState.left = true;
-            if (e.code === 'KeyD') moveState.right = true;
-            if (e.code === 'Space') moveState.jump = true;
-        });
-
-        document.addEventListener('keyup', (e) => {
-            if (e.code === 'KeyW') moveState.forward = false;
-            if (e.code === 'KeyS') moveState.backward = false;
-            if (e.code === 'KeyA') moveState.left = false;
-            if (e.code === 'KeyD') moveState.right = false;
-        });
-
-        // --- World Generation ---
-        const blocks = [];
-        const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-        const grassMat = new THREE.MeshLambertMaterial({ color: 0x4d9030 });
-
-        function createBlock(x, y, z) {
-            const mesh = new THREE.Mesh(boxGeo, grassMat);
-            mesh.position.set(x, y, z);
-            scene.add(mesh);
-            blocks.push(mesh);
-        }
-
-        // Generate a 10x10 floor
-        for (let x = -5; x < 5; x++) {
-            for (let z = -5; z < 5; z++) {
-                createBlock(x, 0, z);
+        // Create Floor
+        const floorSize = 20;
+        for (let x = -floorSize; x < floorSize; x++) {
+            for (let z = -floorSize; z < floorSize; z++) {
+                const material = (x + z) % 2 === 0 ? materials[0] : new THREE.MeshLambertMaterial({ color: 0x4da04d });
+                const block = new THREE.Mesh(geometry, material);
+                block.position.set(x, 0, z);
+                scene.add(block);
+                objects.push(block);
             }
         }
 
-        camera.position.y = 2;
-
-        // --- Interaction (Place/Remove) ---
+        // --- INTERACTION (RAYCASTING) ---
         const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2(0, 0);
+        const mouse = new THREE.Vector2();
 
-        window.addEventListener('mousedown', (e) => {
+        // Key listeners for block selection
+        document.addEventListener('keydown', (event) => {
+            if(event.key === '1') currentMaterialIndex = 0;
+            if(event.key === '2') currentMaterialIndex = 1;
+            if(event.key === '3') currentMaterialIndex = 2;
+        });
+
+        document.addEventListener('mousedown', (event) => {
             if (!controls.isLocked) return;
 
-            raycaster.setFromCamera(mouse, camera);
-            const intersects = raycaster.intersectObjects(blocks);
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            const intersects = raycaster.intersectObjects(objects);
 
             if (intersects.length > 0) {
                 const intersect = intersects[0];
+
+                // Left Click: Remove Block (0 = Left Click)
+                if (event.button === 0) { 
+                    // Don't delete the bedrock (y=0) if you want to keep a floor
+                    if(intersect.object.position.y > 0) {
+                        scene.remove(intersect.object);
+                        objects.splice(objects.indexOf(intersect.object), 1);
+                    }
+                }
                 
-                if (e.button === 0) { // Left Click: Remove
-                    scene.remove(intersect.object);
-                    blocks.splice(blocks.indexOf(intersect.object), 1);
-                } else if (e.button === 2) { // Right Click: Place
-                    const pos = intersect.object.position.clone().add(intersect.face.normal);
-                    createBlock(pos.x, pos.y, pos.z);
+                // Right Click: Add Block (2 = Right Click)
+                if (event.button === 2) { 
+                    const voxel = new THREE.Mesh(geometry, materials[currentMaterialIndex]);
+                    // Place block adjacent to the face we clicked
+                    voxel.position.copy(intersect.point).add(intersect.face.normal).floor().addScalar(0.5);
+                    scene.add(voxel);
+                    objects.push(voxel);
                 }
             }
         });
-        window.addEventListener('contextmenu', e => e.preventDefault());
 
-        // --- Game Loop ---
+        // --- MOVEMENT LOGIC ---
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+        let canJump = false;
+
+        const onKeyDown = function (event) {
+            switch (event.code) {
+                case 'ArrowUp': case 'KeyW': moveForward = true; break;
+                case 'ArrowLeft': case 'KeyA': moveLeft = true; break;
+                case 'ArrowDown': case 'KeyS': moveBackward = true; break;
+                case 'ArrowRight': case 'KeyD': moveRight = true; break;
+                case 'Space': if (canJump === true) velocity.y += 30; canJump = false; break;
+            }
+        };
+
+        const onKeyUp = function (event) {
+            switch (event.code) {
+                case 'ArrowUp': case 'KeyW': moveForward = false; break;
+                case 'ArrowLeft': case 'KeyA': moveLeft = false; break;
+                case 'ArrowDown': case 'KeyS': moveBackward = false; break;
+                case 'ArrowRight': case 'KeyD': moveRight = false; break;
+            }
+        };
+
+        document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('keyup', onKeyUp);
+
         let prevTime = performance.now();
+
+        // --- ANIMATION LOOP ---
         function animate() {
             requestAnimationFrame(animate);
 
-            const time = performance.now();
-            const delta = (time - prevTime) / 1000;
+            if (controls.isLocked === true) {
+                const time = performance.now();
+                const delta = (time - prevTime) / 1000;
 
-            if (controls.isLocked) {
-                // Gravity & Movement
-                velocity.y -= 9.8 * 2.0 * delta; // Gravity
-                velocity.x -= velocity.x * 10.0 * delta; // Friction
+                velocity.x -= velocity.x * 10.0 * delta;
                 velocity.z -= velocity.z * 10.0 * delta;
+                velocity.y -= 9.8 * 10.0 * delta; // Gravity
 
-                direction.z = Number(moveState.forward) - Number(moveState.backward);
-                direction.x = Number(moveState.right) - Number(moveState.left);
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
                 direction.normalize();
 
-                if (moveState.forward || moveState.backward) velocity.z -= direction.z * 40.0 * delta;
-                if (moveState.left || moveState.right) velocity.x -= direction.x * 40.0 * delta;
+                if (moveForward || moveBackward) velocity.z -= direction.z * 40.0 * delta;
+                if (moveLeft || moveRight) velocity.x -= direction.x * 40.0 * delta;
 
                 controls.moveRight(-velocity.x * delta);
                 controls.moveForward(-velocity.z * delta);
-
+                
                 camera.position.y += (velocity.y * delta);
 
-                // Simple Ground Collision
+                // Simple Floor Collision
                 if (camera.position.y < 2) {
                     velocity.y = 0;
                     camera.position.y = 2;
-                    if (moveState.jump) velocity.y = 7;
+                    canJump = true;
                 }
             }
 
+            prevTime = performance.now();
             renderer.render(scene, camera);
-            prevTime = time;
         }
 
         animate();
 
-        // Handle Resize
+        // Handle window resize
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
+
     </script>
 </body>
 </html>
