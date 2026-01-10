@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Minecraft: Bedrock Edition</title>
+    <title>Minecraft: Ocean Builder</title>
     <style>
         body { margin: 0; overflow: hidden; background: #87CEEB; font-family: 'Segoe UI', monospace; user-select: none; }
         
@@ -43,9 +43,9 @@
     <div id="water-overlay"></div>
     <div id="crosshair"></div>
     <div id="ui">
-        <b>Bedrock Edition</b><br>
-        FPS: <span id="fps">60</span><br>
-        Coords: <span id="coords">0, 0, 0</span>
+        <b>Island Builder</b><br>
+        WASD = Move | Space = Jump/Swim<br>
+        Right Click = Build | Left Click = Mine
     </div>
     <div id="hotbar"></div>
 
@@ -65,22 +65,21 @@
         // --- CONSTANTS ---
         const CHUNK_SIZE = 16;
         const RENDER_DISTANCE = 4; 
-        const WORLD_H = 32;
-        const WATER_LEVEL = 8;
+        const WORLD_H = 40;
+        const WATER_LEVEL = 6;
         
         // Block IDs
         const BLOCKS = [
             null, // 0
             { name: 'Grass', color: '#4caf50', top: '#66bb6a', side: '#5d4037' },
-            { name: 'Dirt',  color: '#5d4037' },
+            { name: 'Sand',  color: '#e6c9a8' },
             { name: 'Stone', color: '#757575' },
             { name: 'Wood',  color: '#5d4037', side: '#3e2723' },
             { name: 'Leaf',  color: '#2e7d32', transparent: true },
-            { name: 'Sand',  color: '#e6c9a8' },
-            { name: 'Water', color: '#29b6f6', transparent: true, fluid: true }, // ID 7
-            { name: 'Brick', color: '#8d6e63' },
-            { name: 'Bedrock', color: '#111111' }, // ID 9
-            { name: 'Glass', color: '#ffffff', transparent: true }
+            { name: 'Water', color: '#29b6f6', transparent: true, fluid: true },
+            { name: 'Plank', color: '#8d6e63' }, // Building block
+            { name: 'Brick', color: '#b71c1c' }, // Building block
+            { name: 'Glass', color: '#ffffff', transparent: true } // Building block
         ];
 
         // --- TEXTURE ATLAS ---
@@ -94,13 +93,13 @@
                 ctx.fillStyle = b.side || b.color;
                 ctx.fillRect(i*32, 0, 32, 32);
                 
-                // Noise
                 ctx.fillStyle = 'rgba(0,0,0,0.1)';
-                for(let k=0; k<10; k++) ctx.fillRect(i*32+Math.random()*32, Math.random()*32, 2, 2);
+                for(let k=0; k<8; k++) ctx.fillRect(i*32+Math.random()*32, Math.random()*32, 2, 2);
 
                 if(b.name==='Grass') { ctx.fillStyle = b.top; ctx.fillRect(i*32, 0, 32, 10); } 
                 if(b.name==='Wood') { ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.fillRect(i*32+8,0,4,32); ctx.fillRect(i*32+20,0,4,32); }
-                if(b.name==='Bedrock') { ctx.fillStyle='black'; ctx.fillRect(i*32+5,5,22,22); }
+                if(b.name==='Brick') { ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.fillRect(i*32,15,32,2); ctx.fillRect(i*32+15,0,2,15); }
+                if(b.name==='Plank') { ctx.fillStyle='rgba(0,0,0,0.1)'; ctx.fillRect(i*32,0,2,32); ctx.fillRect(i*32,8,32,2); ctx.fillRect(i*32,24,32,2); }
                 if(b.name==='Leaf' || b.name==='Glass') { ctx.strokeStyle='white'; ctx.strokeRect(i*32+2,2,28,28); }
             });
 
@@ -111,13 +110,13 @@
         }
 
         const atlas = createAtlas();
-        const matOpaque = new THREE.MeshStandardMaterial({ map: atlas, roughness: 0.9 });
+        const matOpaque = new THREE.MeshStandardMaterial({ map: atlas, roughness: 0.8 });
         const matTrans = new THREE.MeshStandardMaterial({ map: atlas, transparent: true, opacity: 0.7, side: THREE.DoubleSide, alphaTest: 0.1 });
 
-        // --- SCENE SETUP ---
+        // --- SCENE ---
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0x87CEEB);
-        scene.fog = new THREE.Fog(0x87CEEB, 20, 60);
+        scene.fog = new THREE.Fog(0x87CEEB, 20, 70);
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: false });
@@ -129,19 +128,21 @@
         sun.position.set(50, 80, 50);
         sun.castShadow = true;
         scene.add(sun);
-        scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+        scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 
-        // --- WORLD LOGIC ---
+        // --- WORLD GENERATION ---
         const chunks = new Map();
 
-        function noise(x, z) { return Math.sin(x/15) * Math.cos(z/15); }
+        // Noise for Islands
+        function noise(x, z) { 
+            return Math.sin(x/25) * Math.cos(z/25) + Math.sin(x/50 + z/50)*0.5; 
+        }
 
         class Chunk {
             constructor(cx, cz) {
                 this.cx = cx; this.cz = cz;
                 this.blocks = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE * WORLD_H);
-                this.meshO = null; 
-                this.meshT = null;
+                this.meshO = null; this.meshT = null;
                 this.generate();
             }
 
@@ -155,32 +156,37 @@
 
                 for(let x=0; x<CHUNK_SIZE; x++) {
                     for(let z=0; z<CHUNK_SIZE; z++) {
-                        // Terrain Height
-                        const h = Math.floor(noise(sx+x, sz+z) * 5 + 15);
+                        // Island Shape Logic
+                        let h = Math.floor(noise(sx+x, sz+z) * 10 + 2); // Base height
                         
-                        // Fill Vertical Column
+                        // Fill Column
                         for(let y=0; y<WORLD_H; y++) {
                             let id = 0;
                             
-                            if (y === 0) id = 9; // Bedrock
-                            else if (y <= h) {
-                                if(y === h) id = (y <= WATER_LEVEL + 1) ? 6 : 1; // Sand if near water, else Grass
-                                else if (y > h-3) id = 2; // Dirt
+                            // Terrain
+                            if (y <= h) {
+                                if (y <= WATER_LEVEL + 2) id = 2; // Sand Beach
+                                else if (y === h) id = 1; // Grass
                                 else id = 3; // Stone
                             }
-                            else if (y <= WATER_LEVEL) id = 7; // Water
+                            // Water
+                            else if (y <= WATER_LEVEL) {
+                                id = 6; // Water
+                            }
 
                             this.set(x, y, z, id);
                         }
                         
-                        // Trees (only on grass above water)
-                        if(this.get(x, h, z) === 1 && Math.random() > 0.98) {
+                        // Trees (Palm style)
+                        if(h > WATER_LEVEL + 2 && this.get(x, h, z) === 1 && Math.random() > 0.97) {
                             const th = h+1;
-                            for(let i=0; i<4; i++) this.set(x, th+i, z, 4); // Wood
-                            for(let lx=x-2; lx<=x+2; lx++) for(let lz=z-2; lz<=z+2; lz++) {
-                                if(lx!==x || lz!==z) this.set(lx, th+3, lz, 5); // Leaf
-                            }
-                            this.set(x, th+4, z, 5);
+                            // Trunk
+                            for(let i=0; i<5; i++) this.set(x, th+i, z, 4); 
+                            // Leaves
+                            this.set(x, th+5, z, 5);
+                            this.set(x+1, th+5, z, 5); this.set(x-1, th+5, z, 5);
+                            this.set(x, th+5, z+1, 5); this.set(x, th+5, z-1, 5);
+                            this.set(x+2, th+4, z, 5); this.set(x-2, th+4, z, 5);
                         }
                     }
                 }
@@ -226,6 +232,7 @@
                     [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].forEach(d => {
                         const nid = this.get(x+d[0], y+d[1], z+d[2]);
                         const nprops = BLOCKS[nid];
+                        // Water rendering logic (don't draw water faces touching other water)
                         if(nid === 0 || (nprops && nprops.transparent && (nid!==id || !props.fluid))) {
                             addFace(x,y,z, d[0],d[1],d[2], id, props.transparent);
                         }
@@ -298,14 +305,9 @@
             const b = getBlock(Math.floor(x), Math.floor(y), Math.floor(z));
             return b > 0 && !BLOCKS[b].fluid;
         }
-        
-        function checkWater(x, y, z) {
-            const b = getBlock(Math.floor(x), Math.floor(y), Math.floor(z));
-            return b === 7; // Water ID
-        }
 
         function updatePhysics(dt) {
-            const inWater = checkWater(player.pos.x, player.pos.y, player.pos.z);
+            const inWater = getBlock(Math.floor(player.pos.x), Math.floor(player.pos.y), Math.floor(player.pos.z)) === 6;
             document.getElementById('water-overlay').style.display = inWater ? 'block' : 'none';
             scene.fog.color.setHex(inWater ? 0x002050 : 0x87CEEB);
 
@@ -323,18 +325,16 @@
             if(keys.d) player.vel.sub(right.multiplyScalar(-speed));
 
             player.vel.y -= (inWater ? 10 : 35) * dt;
-            if(inWater && keys.sp) player.vel.y = 5; // Swim
+            if(inWater && keys.sp) player.vel.y = 5; 
 
-            // Collision Detection
+            // Physics Steps
             player.pos.x += player.vel.x * dt;
-            if(checkCollision(player.pos.x + (player.vel.x>0?0.3:-0.3), player.pos.y, player.pos.z) || 
-               checkCollision(player.pos.x + (player.vel.x>0?0.3:-0.3), player.pos.y+1, player.pos.z)) {
+            if(checkCollision(player.pos.x + (player.vel.x>0?0.3:-0.3), player.pos.y, player.pos.z)) {
                 player.pos.x -= player.vel.x * dt; player.vel.x = 0;
             }
 
             player.pos.z += player.vel.z * dt;
-            if(checkCollision(player.pos.x, player.pos.y, player.pos.z + (player.vel.z>0?0.3:-0.3)) ||
-               checkCollision(player.pos.x, player.pos.y+1, player.pos.z + (player.vel.z>0?0.3:-0.3))) {
+            if(checkCollision(player.pos.x, player.pos.y, player.pos.z + (player.vel.z>0?0.3:-0.3))) {
                 player.pos.z -= player.vel.z * dt; player.vel.z = 0;
             }
 
@@ -354,7 +354,7 @@
         // --- CONTROLS UI ---
         const hotbar = document.getElementById('hotbar');
         BLOCKS.forEach((b, i) => {
-            if(!b || b.name === 'Bedrock') return; // Don't show bedrock in hotbar
+            if(!b || b.name === 'Water') return;
             const el = document.createElement('div');
             el.className = 'slot';
             el.innerText = i;
@@ -372,7 +372,7 @@
             if(e.code==='Space') keys.sp=1;
             if(e.key>='1' && e.key<='9') {
                 const idx = parseInt(e.key);
-                if(BLOCKS[idx] && BLOCKS[idx].name !== 'Bedrock') {
+                if(BLOCKS[idx] && BLOCKS[idx].name !== 'Water') {
                     selectedBlock = idx;
                     document.querySelectorAll('.slot').forEach(s => s.classList.remove('active'));
                     const slot = Array.from(hotbar.children).find(el => el.innerText == idx);
@@ -400,10 +400,8 @@
                 const by = Math.floor(h.point.y - n.y * 0.1);
                 const bz = Math.floor(h.point.z - n.z * 0.1);
 
-                if(e.button === 0) {
-                    const blk = getBlock(bx, by, bz);
-                    if(blk !== 9) setBlock(bx, by, bz, 0); // Don't break bedrock (ID 9)
-                } else if(e.button === 2) { 
+                if(e.button === 0) setBlock(bx, by, bz, 0); // Mine
+                else if(e.button === 2) { 
                     const tx=bx+n.x, ty=by+n.y, tz=bz+n.z;
                     if(Math.abs(tx-player.pos.x)<0.6 && Math.abs(tz-player.pos.z)<0.6 && ty>=player.pos.y-1.6 && ty<=player.pos.y+0.5) return;
                     setBlock(tx, ty, tz, selectedBlock);
@@ -420,8 +418,6 @@
             if(controls.isLocked) {
                 updatePhysics(dt);
                 updateChunks();
-                document.getElementById('coords').innerText = `${Math.floor(player.pos.x)}, ${Math.floor(player.pos.y)}, ${Math.floor(player.pos.z)}`;
-                document.getElementById('fps').innerText = Math.round(1/dt);
             }
             renderer.render(scene, camera);
         }
