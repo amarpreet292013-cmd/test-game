@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Minecraft: Ocean Builder</title>
+    <title>Minecraft: Flowing Water</title>
     <style>
         body { margin: 0; overflow: hidden; background: #87CEEB; font-family: 'Segoe UI', monospace; user-select: none; }
         
@@ -43,9 +43,9 @@
     <div id="water-overlay"></div>
     <div id="crosshair"></div>
     <div id="ui">
-        <b>Island Builder</b><br>
+        <b>Flowing Update</b><br>
         WASD = Move | Space = Jump/Swim<br>
-        Right Click = Build | Left Click = Mine
+        Layer 0 is Unbreakable Bedrock
     </div>
     <div id="hotbar"></div>
 
@@ -66,7 +66,7 @@
         const CHUNK_SIZE = 16;
         const RENDER_DISTANCE = 4; 
         const WORLD_H = 40;
-        const WATER_LEVEL = 6;
+        const WATER_LEVEL = 7;
         
         // Block IDs
         const BLOCKS = [
@@ -76,13 +76,15 @@
             { name: 'Stone', color: '#757575' },
             { name: 'Wood',  color: '#5d4037', side: '#3e2723' },
             { name: 'Leaf',  color: '#2e7d32', transparent: true },
-            { name: 'Water', color: '#29b6f6', transparent: true, fluid: true },
-            { name: 'Plank', color: '#8d6e63' }, // Building block
-            { name: 'Brick', color: '#b71c1c' }, // Building block
-            { name: 'Glass', color: '#ffffff', transparent: true } // Building block
+            { name: 'Water', color: '#29b6f6', transparent: true, fluid: true }, // ID 6
+            { name: 'Plank', color: '#8d6e63' },
+            { name: 'Glass', color: '#ffffff', transparent: true },
+            { name: 'Bedrock', color: '#000000', unbreakable: true } // ID 9
         ];
 
-        // --- TEXTURE ATLAS ---
+        // --- TEXTURE GENERATION ---
+        
+        // 1. Solid Block Atlas
         function createAtlas() {
             const canvas = document.createElement('canvas');
             canvas.width = 32 * BLOCKS.length; canvas.height = 32;
@@ -93,25 +95,46 @@
                 ctx.fillStyle = b.side || b.color;
                 ctx.fillRect(i*32, 0, 32, 32);
                 
+                // Details
                 ctx.fillStyle = 'rgba(0,0,0,0.1)';
                 for(let k=0; k<8; k++) ctx.fillRect(i*32+Math.random()*32, Math.random()*32, 2, 2);
 
                 if(b.name==='Grass') { ctx.fillStyle = b.top; ctx.fillRect(i*32, 0, 32, 10); } 
                 if(b.name==='Wood') { ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.fillRect(i*32+8,0,4,32); ctx.fillRect(i*32+20,0,4,32); }
-                if(b.name==='Brick') { ctx.fillStyle='rgba(0,0,0,0.2)'; ctx.fillRect(i*32,15,32,2); ctx.fillRect(i*32+15,0,2,15); }
-                if(b.name==='Plank') { ctx.fillStyle='rgba(0,0,0,0.1)'; ctx.fillRect(i*32,0,2,32); ctx.fillRect(i*32,8,32,2); ctx.fillRect(i*32,24,32,2); }
+                if(b.name==='Bedrock') { ctx.fillStyle='#222'; ctx.fillRect(i*32+4,4,24,24); ctx.fillStyle='#000'; ctx.fillRect(i*32+10,10,12,12); }
                 if(b.name==='Leaf' || b.name==='Glass') { ctx.strokeStyle='white'; ctx.strokeRect(i*32+2,2,28,28); }
             });
 
             const tex = new THREE.CanvasTexture(canvas);
             tex.magFilter = THREE.NearestFilter;
-            tex.colorSpace = THREE.SRGBColorSpace;
+            return tex;
+        }
+
+        // 2. Water Texture (Separate so we can animate offset)
+        function createWaterTex() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 64; canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#29b6f6';
+            ctx.fillRect(0,0,64,64);
+            ctx.fillStyle = '#4fc3f7';
+            // Waves pattern
+            for(let i=0; i<20; i++) {
+                ctx.fillRect(Math.random()*60, Math.random()*60, 10, 2);
+            }
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.wrapS = THREE.RepeatWrapping;
+            tex.wrapT = THREE.RepeatWrapping;
+            tex.magFilter = THREE.NearestFilter;
             return tex;
         }
 
         const atlas = createAtlas();
+        const waterTex = createWaterTex();
+
         const matOpaque = new THREE.MeshStandardMaterial({ map: atlas, roughness: 0.8 });
-        const matTrans = new THREE.MeshStandardMaterial({ map: atlas, transparent: true, opacity: 0.7, side: THREE.DoubleSide, alphaTest: 0.1 });
+        const matTrans = new THREE.MeshStandardMaterial({ map: atlas, transparent: true, opacity: 0.8, side: THREE.DoubleSide, alphaTest: 0.1 });
+        const matWater = new THREE.MeshStandardMaterial({ map: waterTex, transparent: true, opacity: 0.6, side: THREE.DoubleSide });
 
         // --- SCENE ---
         const scene = new THREE.Scene();
@@ -128,12 +151,11 @@
         sun.position.set(50, 80, 50);
         sun.castShadow = true;
         scene.add(sun);
-        scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+        scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 
         // --- WORLD GENERATION ---
         const chunks = new Map();
 
-        // Noise for Islands
         function noise(x, z) { 
             return Math.sin(x/25) * Math.cos(z/25) + Math.sin(x/50 + z/50)*0.5; 
         }
@@ -142,7 +164,7 @@
             constructor(cx, cz) {
                 this.cx = cx; this.cz = cz;
                 this.blocks = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE * WORLD_H);
-                this.meshO = null; this.meshT = null;
+                this.meshO = null; this.meshT = null; this.meshW = null;
                 this.generate();
             }
 
@@ -156,20 +178,17 @@
 
                 for(let x=0; x<CHUNK_SIZE; x++) {
                     for(let z=0; z<CHUNK_SIZE; z++) {
-                        // Island Shape Logic
-                        let h = Math.floor(noise(sx+x, sz+z) * 10 + 2); // Base height
+                        let h = Math.floor(noise(sx+x, sz+z) * 10 + 2); 
                         
-                        // Fill Column
                         for(let y=0; y<WORLD_H; y++) {
                             let id = 0;
                             
-                            // Terrain
-                            if (y <= h) {
-                                if (y <= WATER_LEVEL + 2) id = 2; // Sand Beach
+                            if (y === 0) id = 9; // BEDROCK (Bottom Layer)
+                            else if (y <= h) {
+                                if (y <= WATER_LEVEL + 2) id = 2; // Sand
                                 else if (y === h) id = 1; // Grass
                                 else id = 3; // Stone
                             }
-                            // Water
                             else if (y <= WATER_LEVEL) {
                                 id = 6; // Water
                             }
@@ -177,16 +196,12 @@
                             this.set(x, y, z, id);
                         }
                         
-                        // Trees (Palm style)
+                        // Trees
                         if(h > WATER_LEVEL + 2 && this.get(x, h, z) === 1 && Math.random() > 0.97) {
                             const th = h+1;
-                            // Trunk
                             for(let i=0; i<5; i++) this.set(x, th+i, z, 4); 
-                            // Leaves
-                            this.set(x, th+5, z, 5);
-                            this.set(x+1, th+5, z, 5); this.set(x-1, th+5, z, 5);
+                            this.set(x, th+5, z, 5); this.set(x+1, th+5, z, 5); this.set(x-1, th+5, z, 5);
                             this.set(x, th+5, z+1, 5); this.set(x, th+5, z-1, 5);
-                            this.set(x+2, th+4, z, 5); this.set(x-2, th+4, z, 5);
                         }
                     }
                 }
@@ -196,17 +211,20 @@
             buildMesh() {
                 if(this.meshO) { this.meshO.geometry.dispose(); scene.remove(this.meshO); }
                 if(this.meshT) { this.meshT.geometry.dispose(); scene.remove(this.meshT); }
+                if(this.meshW) { this.meshW.geometry.dispose(); scene.remove(this.meshW); }
 
                 const posO=[], uvO=[], normO=[], indO=[];
                 const posT=[], uvT=[], normT=[], indT=[];
-                let vcO = 0, vcT = 0;
+                const posW=[], uvW=[], normW=[], indW=[];
+                let vcO = 0, vcT = 0, vcW = 0;
 
-                const addFace = (x,y,z, nx,ny,nz, id, trans) => {
-                    const pos = trans ? posT : posO;
-                    const uv = trans ? uvT : uvO;
-                    const norm = trans ? normT : normO;
-                    const ind = trans ? indT : indO;
-                    let vc = trans ? vcT : vcO;
+                const addFace = (x,y,z, nx,ny,nz, id) => {
+                    const props = BLOCKS[id];
+                    let pos, uv, norm, ind, vc;
+                    
+                    if (props.name === 'Water') { pos=posW; uv=uvW; norm=normW; ind=indW; vc=vcW; }
+                    else if (props.transparent) { pos=posT; uv=uvT; norm=normT; ind=indT; vc=vcT; }
+                    else { pos=posO; uv=uvO; norm=normO; ind=indO; vc=vcO; }
 
                     const sx=x, sy=y, sz=z;
                     if(nx===1) { pos.push(sx+1,sy,sz+1, sx+1,sy,sz, sx+1,sy+1,sz, sx+1,sy+1,sz+1); norm.push(1,0,0, 1,0,0, 1,0,0, 1,0,0); }
@@ -216,12 +234,19 @@
                     if(nz===1) { pos.push(sx,sy,sz+1, sx+1,sy,sz+1, sx+1,sy+1,sz+1, sx,sy+1,sz+1); norm.push(0,0,1, 0,0,1, 0,0,1, 0,0,1); }
                     if(nz===-1) { pos.push(sx+1,sy,sz, sx,sy,sz, sx,sy+1,sz, sx+1,sy+1,sz); norm.push(0,0,-1, 0,0,-1, 0,0,-1, 0,0,-1); }
 
-                    const step = 1/BLOCKS.length;
-                    const u0 = id * step; 
-                    uv.push(u0,0, u0+step,0, u0+step,1, u0,1);
-                    ind.push(vc, vc+1, vc+2, vc, vc+2, vc+3);
+                    // UVs
+                    if (props.name === 'Water') {
+                        // Water uses full texture, no atlas
+                        uv.push(0,0, 1,0, 1,1, 0,1);
+                        vcW += 4;
+                    } else {
+                        const step = 1/BLOCKS.length;
+                        const u0 = id * step; 
+                        uv.push(u0,0, u0+step,0, u0+step,1, u0,1);
+                        if (props.transparent) vcT += 4; else vcO += 4;
+                    }
                     
-                    if(trans) vcT+=4; else vcO+=4;
+                    ind.push(vc, vc+1, vc+2, vc, vc+2, vc+3);
                 }
 
                 for(let x=0; x<CHUNK_SIZE; x++) for(let z=0; z<CHUNK_SIZE; z++) for(let y=0; y<WORLD_H; y++) {
@@ -232,35 +257,31 @@
                     [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]].forEach(d => {
                         const nid = this.get(x+d[0], y+d[1], z+d[2]);
                         const nprops = BLOCKS[nid];
-                        // Water rendering logic (don't draw water faces touching other water)
+                        // Render face if neighbor is air OR transparent (and not same fluid)
                         if(nid === 0 || (nprops && nprops.transparent && (nid!==id || !props.fluid))) {
-                            addFace(x,y,z, d[0],d[1],d[2], id, props.transparent);
+                            addFace(x,y,z, d[0],d[1],d[2], id);
                         }
                     });
                 }
 
-                if(posO.length > 0) {
+                // Create Meshes
+                const createMesh = (p,u,n,i,mat, type) => {
+                    if(p.length===0) return;
                     const g = new THREE.BufferGeometry();
-                    g.setAttribute('position', new THREE.Float32BufferAttribute(posO, 3));
-                    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvO, 2));
-                    g.setAttribute('normal', new THREE.Float32BufferAttribute(normO, 3));
-                    g.setIndex(indO);
-                    this.meshO = new THREE.Mesh(g, matOpaque);
-                    this.meshO.position.set(this.cx*CHUNK_SIZE, 0, this.cz*CHUNK_SIZE);
-                    this.meshO.castShadow = true; this.meshO.receiveShadow = true;
-                    scene.add(this.meshO);
+                    g.setAttribute('position', new THREE.Float32BufferAttribute(p,3));
+                    g.setAttribute('uv', new THREE.Float32BufferAttribute(u,2));
+                    g.setAttribute('normal', new THREE.Float32BufferAttribute(n,3));
+                    g.setIndex(i);
+                    const m = new THREE.Mesh(g, mat);
+                    m.position.set(this.cx*CHUNK_SIZE, 0, this.cz*CHUNK_SIZE);
+                    m.castShadow = (type!=='water'); m.receiveShadow = true;
+                    scene.add(m);
+                    return m;
                 }
-                
-                if(posT.length > 0) {
-                    const g = new THREE.BufferGeometry();
-                    g.setAttribute('position', new THREE.Float32BufferAttribute(posT, 3));
-                    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvT, 2));
-                    g.setAttribute('normal', new THREE.Float32BufferAttribute(normT, 3));
-                    g.setIndex(indT);
-                    this.meshT = new THREE.Mesh(g, matTrans);
-                    this.meshT.position.set(this.cx*CHUNK_SIZE, 0, this.cz*CHUNK_SIZE);
-                    scene.add(this.meshT);
-                }
+
+                this.meshO = createMesh(posO, uvO, normO, indO, matOpaque, 'solid');
+                this.meshT = createMesh(posT, uvT, normT, indT, matTrans, 'trans');
+                this.meshW = createMesh(posW, uvW, normW, indW, matWater, 'water');
             }
         }
 
@@ -329,12 +350,14 @@
 
             // Physics Steps
             player.pos.x += player.vel.x * dt;
-            if(checkCollision(player.pos.x + (player.vel.x>0?0.3:-0.3), player.pos.y, player.pos.z)) {
+            if(checkCollision(player.pos.x + (player.vel.x>0?0.3:-0.3), player.pos.y, player.pos.z) || 
+               checkCollision(player.pos.x + (player.vel.x>0?0.3:-0.3), player.pos.y+1, player.pos.z)) {
                 player.pos.x -= player.vel.x * dt; player.vel.x = 0;
             }
 
             player.pos.z += player.vel.z * dt;
-            if(checkCollision(player.pos.x, player.pos.y, player.pos.z + (player.vel.z>0?0.3:-0.3))) {
+            if(checkCollision(player.pos.x, player.pos.y, player.pos.z + (player.vel.z>0?0.3:-0.3)) ||
+               checkCollision(player.pos.x, player.pos.y+1, player.pos.z + (player.vel.z>0?0.3:-0.3))) {
                 player.pos.z -= player.vel.z * dt; player.vel.z = 0;
             }
 
@@ -351,10 +374,10 @@
             camera.position.copy(player.pos);
         }
 
-        // --- CONTROLS UI ---
+        // --- CONTROLS ---
         const hotbar = document.getElementById('hotbar');
         BLOCKS.forEach((b, i) => {
-            if(!b || b.name === 'Water') return;
+            if(!b || b.name === 'Water' || b.name === 'Bedrock') return;
             const el = document.createElement('div');
             el.className = 'slot';
             el.innerText = i;
@@ -372,7 +395,7 @@
             if(e.code==='Space') keys.sp=1;
             if(e.key>='1' && e.key<='9') {
                 const idx = parseInt(e.key);
-                if(BLOCKS[idx] && BLOCKS[idx].name !== 'Water') {
+                if(BLOCKS[idx] && BLOCKS[idx].name !== 'Water' && BLOCKS[idx].name !== 'Bedrock') {
                     selectedBlock = idx;
                     document.querySelectorAll('.slot').forEach(s => s.classList.remove('active'));
                     const slot = Array.from(hotbar.children).find(el => el.innerText == idx);
@@ -400,8 +423,10 @@
                 const by = Math.floor(h.point.y - n.y * 0.1);
                 const bz = Math.floor(h.point.z - n.z * 0.1);
 
-                if(e.button === 0) setBlock(bx, by, bz, 0); // Mine
-                else if(e.button === 2) { 
+                if(e.button === 0) {
+                    const blockId = getBlock(bx, by, bz);
+                    if (blockId !== 9) setBlock(bx, by, bz, 0); // Mine if not bedrock
+                } else if(e.button === 2) { 
                     const tx=bx+n.x, ty=by+n.y, tz=bz+n.z;
                     if(Math.abs(tx-player.pos.x)<0.6 && Math.abs(tz-player.pos.z)<0.6 && ty>=player.pos.y-1.6 && ty<=player.pos.y+0.5) return;
                     setBlock(tx, ty, tz, selectedBlock);
@@ -414,6 +439,11 @@
         function animate() {
             requestAnimationFrame(animate);
             const dt = Math.min(clock.getDelta(), 0.1);
+            const time = performance.now() / 1000;
+            
+            // Flow Animation
+            waterTex.offset.x = (time * 0.1) % 1;
+            waterTex.offset.y = (time * 0.1) % 1;
 
             if(controls.isLocked) {
                 updatePhysics(dt);
